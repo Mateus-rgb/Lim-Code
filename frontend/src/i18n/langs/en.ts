@@ -411,7 +411,7 @@ const en: LanguageMessages = {
                         image: 'Image',
                         imageFormats: 'PNG, JPEG, WebP',
                         document: 'Document',
-                        documentFormats: 'PDF, Plain Text',
+                        documentFormats: 'PDF',
                         capabilities: 'Multimodal Tool Capabilities:',
                         table: {
                             channel: 'Channel / Mode',
@@ -1139,7 +1139,7 @@ const en: LanguageMessages = {
                 appInfo: {
                     title: 'Application Info',
                     name: 'Lim Code - Vibe Coding Assistant',
-                    version: 'Version: 1.0.5',
+                    version: 'Version: 1.0.6',
                     repository: 'Repository',
                     developer: 'Developer'
                 }

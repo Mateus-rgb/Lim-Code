@@ -705,6 +705,8 @@ export function createGenerateImageTool(
     // 动态生成描述
     let description = `Generate images using AI model. Supports single and batch generation modes.
 
+**Important**: Generated images have solid backgrounds, NOT transparent backgrounds. If you need transparent background images, use the remove_background tool after generation.
+
 **Limits**:
 - Maximum ${maxBatchTasks} generation tasks per call
 - Maximum ${maxImagesPerTask} images saved per task${paramSection}

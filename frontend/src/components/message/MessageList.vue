@@ -4,7 +4,7 @@
  * 扁平化设计，简洁加载动画
  */
 
-import { ref, computed } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { CustomScrollbar, DeleteDialog, Tooltip } from '../common'
 import MessageItem from './MessageItem.vue'
 import SummaryMessage from './SummaryMessage.vue'
@@ -21,6 +21,83 @@ const props = defineProps<{
 
 // 从 store 读取等待状态
 const chatStore = useChatStore()
+
+// CustomScrollbar 引用
+const scrollbarRef = ref<InstanceType<typeof CustomScrollbar> | null>(null)
+
+// 标记是否需要滚动到底部（切换对话时设置）
+const needsScrollToBottom = ref(false)
+
+// ResizeObserver 引用
+let resizeObserver: ResizeObserver | null = null
+
+// 监听对话切换，标记需要滚动
+watch(() => chatStore.currentConversationId, (newId, oldId) => {
+  if (newId !== oldId) {
+    needsScrollToBottom.value = true
+  }
+})
+
+// 监听消息变化，当消息加载完成时尝试滚动
+watch(() => props.messages, (newMessages) => {
+  // 当消息加载完成时，尝试滚动
+  // 如果容器还没有尺寸（display: none），ResizeObserver 会在可见时触发
+  if (needsScrollToBottom.value && newMessages.length > 0) {
+    tryScrollToBottom()
+  }
+}, { deep: false })
+
+// 尝试滚动到底部（会检查容器是否准备好）
+function tryScrollToBottom() {
+  if (!scrollbarRef.value) return
+  
+  const container = scrollbarRef.value.getContainer()
+  if (!container) return
+  
+  // 检查容器是否有尺寸（可见状态）
+  if (container.scrollHeight > 0 && container.clientHeight > 0) {
+    if (needsScrollToBottom.value) {
+      needsScrollToBottom.value = false
+      scrollbarRef.value.scrollToBottom()
+    }
+  }
+  // 如果容器还没有尺寸，ResizeObserver 会在可见时触发
+}
+
+// 设置 ResizeObserver 监听容器尺寸变化
+onMounted(() => {
+  // 使用 nextTick 确保 scrollbarRef 已经绑定
+  nextTick(() => {
+    if (!scrollbarRef.value) return
+    
+    const container = scrollbarRef.value.getContainer()
+    if (!container) return
+    
+    resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { height } = entry.contentRect
+        
+        // 当容器从 0 高度变为有高度时，尝试滚动
+        if (height > 0 && needsScrollToBottom.value) {
+          // 使用 requestAnimationFrame 确保布局完成
+          requestAnimationFrame(() => {
+            tryScrollToBottom()
+          })
+        }
+      }
+    })
+    
+    resizeObserver.observe(container)
+  })
+})
+
+// 清理 ResizeObserver
+onBeforeUnmount(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
+})
 
 const emit = defineEmits<{
   edit: [messageId: string, newContent: string, attachments: Attachment[]]
@@ -252,7 +329,7 @@ function formatCheckpointTime(timestamp: number): string {
 
 <template>
   <div class="message-list">
-    <CustomScrollbar sticky-bottom>
+    <CustomScrollbar ref="scrollbarRef" sticky-bottom>
       <div class="messages-container">
         <template v-for="(message, displayIndex) in messages" :key="message.id">
           <!-- 消息前的检查点（或合并显示） -->

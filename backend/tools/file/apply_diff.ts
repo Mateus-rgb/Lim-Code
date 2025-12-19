@@ -300,7 +300,10 @@ Important:
                             diffCount: diffs.length,
                             appliedCount: diffs.length,
                             pendingReview: true,
-                            results: diffs.length > 1 ? results : undefined
+                            results: diffs.length > 1 ? results : undefined,
+                            // 保存原始内容和新内容，供前端显示完整 diff 视图
+                            originalContent,
+                            newContent: currentContent
                         }
                     };
                 }
@@ -316,7 +319,10 @@ Important:
                         status: wasAccepted ? 'accepted' : 'rejected',
                         diffCount: diffs.length,
                         appliedCount: diffs.length,
-                        results: diffs.length > 1 ? results : undefined
+                        results: diffs.length > 1 ? results : undefined,
+                        // 保存原始内容和新内容，供前端显示完整 diff 视图
+                        originalContent,
+                        newContent: currentContent
                     }
                 };
             } catch (error) {

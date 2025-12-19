@@ -1926,13 +1926,50 @@ export const useChatStore = defineStore('chat', () => {
     // 情况1：正在流式响应，发送取消请求到后端
     try {
       // 发送取消请求到后端
-      // 后端会返回 complete 或 cancelled chunk，那里会处理状态清理
       await sendToExtension('cancelStream', {
         conversationId: currentConversationId.value
       })
+      
+      // 主动清理前端状态，不依赖后端的 cancelled chunk
+      // 这解决了工具迭代后新 AI 请求阶段取消时，后端可能不发送 cancelled chunk 的问题
+      if (streamingMessageId.value) {
+        const messageIndex = allMessages.value.findIndex(m => m.id === streamingMessageId.value)
+        if (messageIndex !== -1) {
+          const message = allMessages.value[messageIndex]
+          
+          const hasPartsContent = message.parts && message.parts.some(p => p.text || p.functionCall)
+          if (!message.content && !message.tools && !hasPartsContent) {
+            // 空消息直接删除
+            allMessages.value = allMessages.value.filter(m => m.id !== streamingMessageId.value)
+          } else {
+            // 非空消息更新状态
+            const updatedTools = message.tools?.map(tool => {
+              if (tool.status === 'running' || tool.status === 'pending') {
+                return { ...tool, status: 'error' as const }
+              }
+              return tool
+            })
+            
+            const updatedMessage: Message = {
+              ...message,
+              streaming: false,
+              tools: updatedTools
+            }
+            
+            allMessages.value = [
+              ...allMessages.value.slice(0, messageIndex),
+              updatedMessage,
+              ...allMessages.value.slice(messageIndex + 1)
+            ]
+          }
+        }
+        streamingMessageId.value = null
+      }
+      isStreaming.value = false
+      isWaitingForResponse.value = false
     } catch (err) {
       console.error('取消请求失败:', err)
-      // 只有在发送取消请求失败时才在前端清理状态
+      // 发送失败时也清理状态
       if (streamingMessageId.value) {
         const message = allMessages.value.find(m => m.id === streamingMessageId.value)
         if (message) {
@@ -1947,7 +1984,6 @@ export const useChatStore = defineStore('chat', () => {
       isStreaming.value = false
       isWaitingForResponse.value = false
     }
-    // 注意：不在这里清理状态，取消消息会在 handleStreamChunk 的 cancelled 分支中添加
   }
   
   /**

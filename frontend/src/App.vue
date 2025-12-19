@@ -240,8 +240,9 @@ onMounted(async () => {
         />
 
         <!-- 有消息时：显示消息列表 -->
+        <!-- 使用 v-show 保持组件挂载状态，避免切换对话时 watch 失效 -->
         <MessageList
-          v-else
+          v-show="!chatStore.showEmptyState"
           :messages="chatStore.messages"
           @edit="handleEdit"
           @delete="handleDelete"

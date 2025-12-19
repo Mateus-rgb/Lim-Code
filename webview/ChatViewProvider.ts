@@ -2747,7 +2747,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         args: Record<string, unknown>;
         result?: Record<string, unknown>;
     }): Promise<void> {
-        const { toolName, filePaths, args } = data;
+        const { toolName, filePaths, args, result } = data;
         
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
@@ -2755,7 +2755,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         
         if (toolName === 'apply_diff') {
-            // 对于 apply_diff，显示 search -> replace 的差异
+            // 对于 apply_diff，显示完整文件的差异
             const filePath = args.path as string;
             const diffs = args.diffs as Array<{ search: string; replace: string; start_line?: number }>;
             
@@ -2763,11 +2763,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 throw new Error(t('webview.errors.invalidDiffData'));
             }
             
-            // 将所有 diff 合并为一个预览
-            // 原始内容：所有 search 内容
-            // 新内容：所有 replace 内容
-            const originalContent = diffs.map((d, i) => `// === Diff #${i + 1}${d.start_line ? ` (Line ${d.start_line})` : ''} ===\n${d.search}`).join('\n\n');
-            const newContent = diffs.map((d, i) => `// === Diff #${i + 1}${d.start_line ? ` (Line ${d.start_line})` : ''} ===\n${d.replace}`).join('\n\n');
+            // 优先使用 result 中的完整文件内容（如果有）
+            const resultData = result?.data as Record<string, unknown> | undefined;
+            const fullOriginalContent = resultData?.originalContent as string | undefined;
+            const fullNewContent = resultData?.newContent as string | undefined;
+            
+            let originalContent: string;
+            let newContent: string;
+            let diffTitle: string;
+            
+            if (fullOriginalContent && fullNewContent) {
+                // 使用完整文件内容进行差异对比
+                originalContent = fullOriginalContent;
+                newContent = fullNewContent;
+                diffTitle = t('webview.messages.fullFileDiffPreview', { filePath });
+            } else {
+                // 回退：只显示 search/replace 块
+                originalContent = diffs.map((d, i) => `// === Diff #${i + 1}${d.start_line ? ` (Line ${d.start_line})` : ''} ===\n${d.search}`).join('\n\n');
+                newContent = diffs.map((d, i) => `// === Diff #${i + 1}${d.start_line ? ` (Line ${d.start_line})` : ''} ===\n${d.replace}`).join('\n\n');
+                diffTitle = t('webview.messages.historyDiffPreview', { filePath });
+            }
             
             // 创建虚拟文档 URI
             const originalUri = vscode.Uri.parse(`limcode-diff-preview:original/${encodeURIComponent(filePath)}`);
@@ -2778,7 +2793,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.diffPreviewProvider.setContent(newUri.toString(), newContent);
             
             // 打开 diff 视图
-            await vscode.commands.executeCommand('vscode.diff', originalUri, newUri, t('webview.messages.historyDiffPreview', { filePath }), {
+            await vscode.commands.executeCommand('vscode.diff', originalUri, newUri, diffTitle, {
                 preview: true
             });
             

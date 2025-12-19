@@ -2065,10 +2065,61 @@ export class ChatHandler {
             // 使用配置中的提示词，如果没有则使用默认提示词
             const prompt = configSummarizePrompt || defaultPrompt;
             
+            // 清理历史中不应发送给 API 的内部字段
+            // 与 ConversationManager.getHistoryForAPI 中的清理逻辑保持一致
+            const cleanedMessages = messagesToSummarize.map(msg => ({
+                ...msg,
+                parts: msg.parts
+                    // 过滤掉思考内容（总结不需要思考过程）
+                    .filter(part => !part.thought)
+                    .map(part => {
+                        let cleanedPart = { ...part };
+                        
+                        // 移除思考签名（总结不需要思考签名）
+                        if (cleanedPart.thoughtSignatures) {
+                            const { thoughtSignatures, ...rest } = cleanedPart;
+                            cleanedPart = rest;
+                        }
+                        
+                        // 清理 functionCall 中的 rejected 字段
+                        // rejected 是内部使用的字段，用于标记用户拒绝执行的工具，不应发送给 API
+                        if (cleanedPart.functionCall) {
+                            const { rejected, ...cleanedFunctionCall } = cleanedPart.functionCall;
+                            cleanedPart = {
+                                ...cleanedPart,
+                                functionCall: cleanedFunctionCall
+                            };
+                        }
+                        
+                        // 清理 inlineData 中的元数据字段
+                        // id 和 name 仅用于存储和前端显示，不应发送给 AI
+                        // displayName 仅 Gemini 支持，其他渠道需要移除
+                        if (cleanedPart.inlineData) {
+                            if (config.type === 'gemini') {
+                                // Gemini: 保留 displayName，移除 id 和 name
+                                const { id, name, ...cleanedInlineData } = cleanedPart.inlineData;
+                                cleanedPart = {
+                                    ...cleanedPart,
+                                    inlineData: cleanedInlineData
+                                };
+                            } else {
+                                // OpenAI/Anthropic/Custom: 移除 id, name, displayName
+                                const { id, name, displayName, ...cleanedInlineData } = cleanedPart.inlineData;
+                                cleanedPart = {
+                                    ...cleanedPart,
+                                    inlineData: cleanedInlineData
+                                };
+                            }
+                        }
+                        
+                        return cleanedPart;
+                    })
+            }));
+            
             // 构建历史（需要总结的完整消息 + 总结请求）
             // 保留完整历史，让 AI 理解上下文
             const summaryRequestHistory: Content[] = [
-                ...messagesToSummarize,
+                ...cleanedMessages,
                 {
                     role: 'user',
                     parts: [{ text: prompt }]

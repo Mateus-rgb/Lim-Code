@@ -411,7 +411,7 @@ const zhCN: LanguageMessages = {
                         image: '图片',
                         imageFormats: 'PNG、JPEG、WebP',
                         document: '文档',
-                        documentFormats: 'PDF、纯文本',
+                        documentFormats: 'PDF',
                         capabilities: '多模态工具能力：',
                         table: {
                             channel: '渠道 / 模式',
@@ -1139,7 +1139,7 @@ const zhCN: LanguageMessages = {
                 appInfo: {
                     title: '应用信息',
                     name: 'Lim Code - Vibe Coding助手',
-                    version: '版本：1.0.5',
+                    version: '版本：1.0.6',
                     repository: '项目仓库',
                     developer: '开发者'
                 }

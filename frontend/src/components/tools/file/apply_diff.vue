@@ -85,7 +85,13 @@ interface DiffLine {
   newLineNum?: number
 }
 
-function computeDiffLines(search: string, replace: string): DiffLine[] {
+/**
+ * 计算 diff 行
+ * @param search 搜索内容
+ * @param replace 替换内容
+ * @param startLine 起始行号（文件中的实际行号），默认为 1
+ */
+function computeDiffLines(search: string, replace: string, startLine: number = 1): DiffLine[] {
   const searchLines = search.split('\n')
   const replaceLines = replace.split('\n')
   const result: DiffLine[] = []
@@ -95,8 +101,9 @@ function computeDiffLines(search: string, replace: string): DiffLine[] {
   
   let oldIdx = 0
   let newIdx = 0
-  let oldLineNum = 1
-  let newLineNum = 1
+  // 使用文件中的实际起始行号
+  let oldLineNum = startLine
+  let newLineNum = startLine
   
   for (const match of lcs) {
     // 添加删除的行（在 search 中但不在 LCS 中）
@@ -197,9 +204,13 @@ function computeLCS(oldLines: string[], newLines: string[]): LCSMatch[] {
 
 // 获取行号宽度
 function getLineNumWidth(diff: DiffBlock): number {
+  const startLine = diff.start_line || 1
   const searchLines = diff.search.split('\n').length
   const replaceLines = diff.replace.split('\n').length
-  const maxLineNum = Math.max(searchLines, replaceLines)
+  // 计算实际的最大行号（起始行号 + 行数 - 1）
+  const maxOldLineNum = startLine + searchLines - 1
+  const maxNewLineNum = startLine + replaceLines - 1
+  const maxLineNum = Math.max(maxOldLineNum, maxNewLineNum)
   return String(maxLineNum).length
 }
 
@@ -341,11 +352,11 @@ onBeforeUnmount(() => {
             <span class="diff-stats">
               <span class="stat deleted">
                 <span class="codicon codicon-remove"></span>
-                {{ getDiffStats(computeDiffLines(diff.search, diff.replace)).deleted }}
+                {{ getDiffStats(computeDiffLines(diff.search, diff.replace, diff.start_line || 1)).deleted }}
               </span>
               <span class="stat added">
                 <span class="codicon codicon-add"></span>
-                {{ getDiffStats(computeDiffLines(diff.search, diff.replace)).added }}
+                {{ getDiffStats(computeDiffLines(diff.search, diff.replace, diff.start_line || 1)).added }}
               </span>
             </span>
           </div>
@@ -363,10 +374,10 @@ onBeforeUnmount(() => {
         
         <!-- Diff 内容 -->
         <div class="diff-content">
-          <CustomScrollbar :horizontal="true">
+          <CustomScrollbar :horizontal="true" :max-height="300">
             <div class="diff-lines">
               <div
-                v-for="(line, lineIndex) in getDisplayLines(computeDiffLines(diff.search, diff.replace), index)"
+                v-for="(line, lineIndex) in getDisplayLines(computeDiffLines(diff.search, diff.replace, diff.start_line || 1), index)"
                 :key="lineIndex"
                 :class="['diff-line', `line-${line.type}`]"
               >
@@ -388,10 +399,10 @@ onBeforeUnmount(() => {
           </CustomScrollbar>
           
           <!-- 展开/收起按钮 -->
-          <div v-if="needsExpand(computeDiffLines(diff.search, diff.replace))" class="expand-section">
+          <div v-if="needsExpand(computeDiffLines(diff.search, diff.replace, diff.start_line || 1))" class="expand-section">
             <button class="expand-btn" @click="toggleExpand(index)">
               <span :class="['codicon', isExpanded(index) ? 'codicon-chevron-up' : 'codicon-chevron-down']"></span>
-              {{ isExpanded(index) ? t('components.tools.file.applyDiffPanel.collapse') : t('components.tools.file.applyDiffPanel.expandRemaining', { count: computeDiffLines(diff.search, diff.replace).length - previewLineCount }) }}
+              {{ isExpanded(index) ? t('components.tools.file.applyDiffPanel.collapse') : t('components.tools.file.applyDiffPanel.expandRemaining', { count: computeDiffLines(diff.search, diff.replace, diff.start_line || 1).length - previewLineCount }) }}
             </button>
           </div>
         </div>
@@ -647,7 +658,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   background: var(--vscode-editor-background);
-  max-height: 300px;
 }
 
 .diff-lines {
