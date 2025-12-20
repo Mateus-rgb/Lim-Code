@@ -58,10 +58,10 @@ export interface InstallProgressEvent {
 export class DependencyManager {
     private static instance: DependencyManager;
     
-    /** LimCode 根目录（默认 ~/.limcode） */
+    /** LimCode 根目录（默认 ~/.limcode 或自定义路径下的 dependencies） */
     private limcodeDir: string;
     
-    /** 依赖安装目录（~/.limcode/node_modules） */
+    /** 依赖安装目录（limcodeDir/node_modules） */
     private depsDir: string;
     
     /** 进度事件监听器 */
@@ -82,21 +82,25 @@ export class DependencyManager {
         }
     };
     
-    private constructor(private context: vscode.ExtensionContext) {
-        // 使用用户主目录下的 .limcode 文件夹
-        this.limcodeDir = path.join(os.homedir(), '.limcode');
+    private constructor(private context: vscode.ExtensionContext, customDepsPath?: string) {
+        // 如果提供了自定义路径，使用自定义路径
+        // 否则使用用户主目录下的 .limcode 文件夹
+        this.limcodeDir = customDepsPath || path.join(os.homedir(), '.limcode');
         this.depsDir = path.join(this.limcodeDir, 'node_modules');
     }
     
     /**
      * 获取单例实例
+     *
+     * @param context VSCode 扩展上下文（首次调用时必须提供）
+     * @param customDepsPath 自定义依赖安装目录（可选）
      */
-    static getInstance(context?: vscode.ExtensionContext): DependencyManager {
+    static getInstance(context?: vscode.ExtensionContext, customDepsPath?: string): DependencyManager {
         if (!DependencyManager.instance) {
             if (!context) {
                 throw new Error(t('modules.dependencies.errors.requiresContext'));
             }
-            DependencyManager.instance = new DependencyManager(context);
+            DependencyManager.instance = new DependencyManager(context, customDepsPath);
         }
         return DependencyManager.instance;
     }

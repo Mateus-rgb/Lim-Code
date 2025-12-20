@@ -8,6 +8,7 @@ import { t } from '../../../i18n';
 import type { ConfigManager } from '../../config/ConfigManager';
 import type { ChannelManager } from '../../channel/ChannelManager';
 import type { ConversationManager } from '../../conversation/ConversationManager';
+import type { DiffStorageManager } from '../../conversation/DiffStorageManager';
 import type { ToolRegistry } from '../../../tools/ToolRegistry';
 import type { CheckpointManager, CheckpointRecord } from '../../checkpoint';
 import type { SettingsManager } from '../../settings/SettingsManager';
@@ -84,6 +85,7 @@ export class ChatHandler {
     private checkpointManager?: CheckpointManager;
     private settingsManager?: SettingsManager;
     private mcpManager?: McpManager;
+    private diffStorageManager?: DiffStorageManager;
     private promptManager: PromptManager;
     
     constructor(
@@ -114,6 +116,14 @@ export class ChatHandler {
      */
     setMcpManager(mcpManager: McpManager): void {
         this.mcpManager = mcpManager;
+    }
+    
+    /**
+     * 设置 Diff 存储管理器（可选）
+     * 用于抽离 apply_diff 工具的 originalContent/newContent 大字段
+     */
+    setDiffStorageManager(diffStorageManager: DiffStorageManager): void {
+        this.diffStorageManager = diffStorageManager;
     }
     
     /**
@@ -1840,9 +1850,9 @@ export class ChatHandler {
     /**
      * 获取用于 API 调用的历史，应用总结过滤和上下文阈值裁剪
      *
-     * 优先级：
+     * 策略：
      * 1. 如果有总结消息，从最后一个总结消息开始获取历史
-     * 2. 如果没有总结消息且 token 数超过阈值，从最旧的回合开始跳过
+     * 2. 在此基础上，如果 token 数仍超过阈值，继续从总结后的回合中裁剪
      *
      * @param conversationId 对话 ID
      * @param config 渠道配置
@@ -1865,22 +1875,13 @@ export class ChatHandler {
         // 查找最后一个总结消息
         const lastSummaryIndex = this.findLastSummaryIndex(fullHistory);
         
-        // 如果有总结消息，从总结消息开始获取历史
+        // 确定有效的起始索引（如果有总结，从总结开始；否则从头开始）
+        const effectiveStartIndex = lastSummaryIndex >= 0 ? lastSummaryIndex : 0;
+        
         if (lastSummaryIndex >= 0) {
             console.log(`[Context] Found summary at index ${lastSummaryIndex}, using as starting point`);
-            
-            // 获取完整的 API 历史
-            const fullApiHistory = await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
-            
-            // 计算对应的 API 历史起始索引
-            // 由于 API 历史可能过滤了一些内容，需要找到对应位置
-            const trimRatio = lastSummaryIndex / fullHistory.length;
-            const apiStartIndex = Math.floor(fullApiHistory.length * trimRatio);
-            
-            return fullApiHistory.slice(apiStartIndex);
         }
         
-        // 没有总结消息，检查上下文阈值
         // 查找最新的 model 消息，获取 totalTokenCount
         let latestTokenCount: number | undefined;
         for (let i = fullHistory.length - 1; i >= 0; i--) {
@@ -1890,24 +1891,96 @@ export class ChatHandler {
             }
         }
         
-        // 如果没有 token 记录，直接获取完整历史
+        // 如果没有 token 记录，直接返回从起始索引开始的历史
         if (latestTokenCount === undefined) {
-            return await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
+            if (effectiveStartIndex === 0) {
+                return await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
+            }
+            // 有总结消息，从总结开始
+            const fullApiHistory = await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
+            const trimRatio = effectiveStartIndex / fullHistory.length;
+            const apiStartIndex = Math.floor(fullApiHistory.length * trimRatio);
+            return fullApiHistory.slice(apiStartIndex);
         }
         
-        // 计算需要跳过的起始索引
-        const startIndex = this.calculateContextTrimStartIndex(fullHistory, config, latestTokenCount);
-        
-        // 如果不需要裁剪，直接返回完整历史
-        if (startIndex === 0) {
-            return await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
+        // 检查是否启用上下文阈值检测
+        if (!config.contextThresholdEnabled) {
+            // 未启用阈值检测，直接返回从起始索引开始的历史
+            if (effectiveStartIndex === 0) {
+                return await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
+            }
+            const fullApiHistory = await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
+            const trimRatio = effectiveStartIndex / fullHistory.length;
+            const apiStartIndex = Math.floor(fullApiHistory.length * trimRatio);
+            return fullApiHistory.slice(apiStartIndex);
         }
+        
+        // 获取最大上下文和阈值
+        const maxContextTokens = (config as any).maxContextTokens || 128000;
+        const thresholdConfig = config.contextThreshold ?? '80%';
+        const threshold = this.calculateThreshold(thresholdConfig, maxContextTokens);
+        
+        // 如果未超过阈值，直接返回从起始索引开始的历史
+        if (latestTokenCount <= threshold) {
+            if (effectiveStartIndex === 0) {
+                return await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
+            }
+            const fullApiHistory = await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
+            const trimRatio = effectiveStartIndex / fullHistory.length;
+            const apiStartIndex = Math.floor(fullApiHistory.length * trimRatio);
+            return fullApiHistory.slice(apiStartIndex);
+        }
+        
+        console.log(`[Context Trim] Token count ${latestTokenCount} exceeds threshold ${threshold}, calculating trim...`);
+        
+        // 超过阈值，需要裁剪
+        // 只对有效起始位置之后的历史进行回合识别
+        const historyAfterStart = fullHistory.slice(effectiveStartIndex);
+        const rounds = this.identifyRounds(historyAfterStart);
+        
+        // 至少需要保留当前回合（最后一个回合）
+        if (rounds.length <= 1) {
+            console.log('[Context Trim] Only one round after summary, cannot trim further');
+            // 即使只有一个回合也要返回从起始索引开始的历史
+            const fullApiHistory = await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
+            const trimRatio = effectiveStartIndex / fullHistory.length;
+            const apiStartIndex = Math.floor(fullApiHistory.length * trimRatio);
+            return fullApiHistory.slice(apiStartIndex);
+        }
+        
+        // 估算每个回合的 token 数
+        // 使用从起始位置开始的 token 数（需要减去之前的 token）
+        // 由于 totalTokenCount 是累计值，这里用当前值估算
+        const avgTokensPerRound = latestTokenCount / rounds.length;
+        
+        // 计算需要保留的回合数
+        const targetTokens = threshold;
+        const roundsToKeep = Math.max(1, Math.floor(targetTokens / avgTokensPerRound));
+        
+        // 需要跳过的回合数
+        const roundsToSkip = Math.max(0, rounds.length - roundsToKeep);
+        
+        if (roundsToSkip === 0) {
+            // 不需要额外裁剪，返回从起始索引开始的历史
+            const fullApiHistory = await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
+            const trimRatio = effectiveStartIndex / fullHistory.length;
+            const apiStartIndex = Math.floor(fullApiHistory.length * trimRatio);
+            return fullApiHistory.slice(apiStartIndex);
+        }
+        
+        // 计算在原始历史中的起始索引
+        // rounds[roundsToSkip].startIndex 是相对于 historyAfterStart 的索引
+        // 需要加上 effectiveStartIndex 得到原始历史中的索引
+        const trimStartIndexRelative = rounds[roundsToSkip].startIndex;
+        const trimStartIndex = effectiveStartIndex + trimStartIndexRelative;
+        
+        console.log(`[Context Trim] Skipping ${roundsToSkip} rounds, starting from index ${trimStartIndex}`);
         
         // 获取完整的 API 历史
         const fullApiHistory = await this.conversationManager.getHistoryForAPI(conversationId, historyOptions);
         
-        // 裁剪历史：从 startIndex 开始
-        const trimRatio = startIndex / fullHistory.length;
+        // 裁剪历史：从 trimStartIndex 开始
+        const trimRatio = trimStartIndex / fullHistory.length;
         const apiStartIndex = Math.floor(fullApiHistory.length * trimRatio);
         
         const trimmedHistory = fullApiHistory.slice(apiStartIndex);
@@ -2110,6 +2183,39 @@ export class ChatHandler {
                                     inlineData: cleanedInlineData
                                 };
                             }
+                        }
+                        
+                        // 清理 functionResponse.response 中的内部字段
+                        // diffContentId, diffId, diffs 是内部使用的字段，不应发送给 AI
+                        if (cleanedPart.functionResponse?.response && typeof cleanedPart.functionResponse.response === 'object') {
+                            let cleanedResponse = cleanedPart.functionResponse.response as Record<string, unknown>;
+                            const { diffContentId, diffId, diffs, ...rest } = cleanedResponse;
+                            
+                            // 检查 data 字段中是否也有这些字段
+                            if (rest.data && typeof rest.data === 'object') {
+                                const { diffContentId: dataDiffContentId, diffId: dataDiffId, diffs: dataDiffs, ...dataRest } = rest.data as Record<string, unknown>;
+                                
+                                // 检查 data.results 数组中的每个元素是否也有 diffContentId
+                                if (Array.isArray(dataRest.results)) {
+                                    dataRest.results = (dataRest.results as Array<Record<string, unknown>>).map(item => {
+                                        if (item && typeof item === 'object') {
+                                            const { diffContentId: itemDiffContentId, ...itemRest } = item;
+                                            return itemRest;
+                                        }
+                                        return item;
+                                    });
+                                }
+                                
+                                rest.data = dataRest;
+                            }
+                            
+                            cleanedPart = {
+                                ...cleanedPart,
+                                functionResponse: {
+                                    ...cleanedPart.functionResponse,
+                                    response: rest
+                                }
+                            };
                         }
                         
                         return cleanedPart;
@@ -3391,4 +3497,5 @@ export class ChatHandler {
             toolResults
         };
     }
+
 }

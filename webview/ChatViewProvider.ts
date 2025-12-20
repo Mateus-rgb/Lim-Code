@@ -18,7 +18,8 @@ import { ConfigManager, MementoStorageAdapter } from '../backend/modules/config'
 import { ChannelManager } from '../backend/modules/channel';
 import { ChatHandler } from '../backend/modules/api/chat';
 import { ModelsHandler } from '../backend/modules/api/models';
-import { SettingsManager, FileSettingsStorage } from '../backend/modules/settings';
+import { SettingsManager, FileSettingsStorage, StoragePathManager } from '../backend/modules/settings';
+import type { StoragePathConfig, StorageStats } from '../backend/modules/settings';
 import { SettingsHandler } from '../backend/modules/api/settings';
 import { CheckpointManager } from '../backend/modules/checkpoint';
 import { McpManager, VSCodeFileSystemMcpStorageAdapter } from '../backend/modules/mcp';
@@ -30,8 +31,10 @@ import {
     setGlobalSettingsManager,
     setGlobalConfigManager,
     setGlobalChannelManager,
-    setGlobalToolRegistry
+    setGlobalToolRegistry,
+    setGlobalDiffStorageManager
 } from '../backend/core/settingsContext';
+import { DiffStorageManager } from '../backend/modules/conversation';
 
 /**
  * Diff 预览内容提供者
@@ -74,6 +77,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private checkpointManager!: CheckpointManager;
     private mcpManager!: McpManager;
     private dependencyManager!: DependencyManager;
+    private storagePathManager!: StoragePathManager;
+    private diffStorageManager!: DiffStorageManager;
     
     // 流式请求取消控制器（按对话ID索引）
     private streamAbortControllers: Map<string, AbortController> = new Map();
@@ -113,61 +118,72 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      * 初始化后端模块
      */
     private async initializeBackend() {
-        // 1. 初始化存储适配器（使用文件系统存储，避免 globalState 过大）
-        // FileSystemStorageAdapter 会在 baseDir 下创建 conversations 和 snapshots 子目录
-        // 所以直接传入 globalStorageUri 即可
-        const storageAdapter = new FileSystemStorageAdapter(vscode, this.context.globalStorageUri.toString());
+        // 1. 初始化设置管理器（需要最先初始化以获取存储路径配置）
+        const settingsStorageDir = path.join(this.context.globalStorageUri.fsPath, 'settings');
+        const settingsStorage = new FileSettingsStorage(settingsStorageDir);
+        this.settingsManager = new SettingsManager(settingsStorage);
+        await this.settingsManager.initialize();
         
-        // 2. 初始化对话管理器
+        // 2. 初始化存储路径管理器
+        this.storagePathManager = new StoragePathManager(this.settingsManager, this.context);
+        await this.storagePathManager.ensureDirectories();
+        
+        // 3. 获取有效的数据存储路径（可能是自定义路径）
+        const effectiveDataUri = this.storagePathManager.getEffectiveDataUri();
+        
+        // 4. 初始化存储适配器（使用文件系统存储，避免 globalState 过大）
+        // FileSystemStorageAdapter 会在 baseDir 下创建 conversations 和 snapshots 子目录
+        const storageAdapter = new FileSystemStorageAdapter(vscode, effectiveDataUri);
+        
+        // 5. 初始化 Diff 存储管理器（用于 apply_diff 的大文件内容抽离）
+        this.diffStorageManager = DiffStorageManager.initialize(this.storagePathManager.getEffectiveDataPath());
+        setGlobalDiffStorageManager(this.diffStorageManager);
+        
+        // 6. 初始化对话管理器
         this.conversationManager = new ConversationManager(storageAdapter);
         
-        // 3. 初始化配置管理器（使用Memento存储）
+        // 7. 初始化配置管理器（使用Memento存储）
         const configStorage = new MementoStorageAdapter(
             this.context.globalState,
             'limcode.configs'
         );
         this.configManager = new ConfigManager(configStorage);
         
-        // 4. 创建默认配置（如果不存在）
+        // 8. 创建默认配置（如果不存在）
         await this.ensureDefaultConfig();
         
-        // 5. 初始化设置管理器
-        const settingsStorageDir = path.join(this.context.globalStorageUri.fsPath, 'settings');
-        const settingsStorage = new FileSettingsStorage(settingsStorageDir);
-        this.settingsManager = new SettingsManager(settingsStorage);
-        await this.settingsManager.initialize();
-        
-        // 5.1 同步语言设置到后端 i18n
+        // 9. 同步语言设置到后端 i18n
         this.syncLanguageToBackend();
         
-        // 6. 设置全局上下文引用（供工具和其他模块访问）
+        // 10. 设置全局上下文引用（供工具和其他模块访问）
         setGlobalSettingsManager(this.settingsManager);
         setGlobalConfigManager(this.configManager);
         setGlobalToolRegistry(toolRegistry);
         
-        // 7. 注册所有工具到工具注册器（必须在 ChannelManager 之前）
+        // 11. 注册所有工具到工具注册器（必须在 ChannelManager 之前）
         registerAllTools(toolRegistry);
         
-        // 8. 初始化渠道管理器（传入工具注册器和设置管理器）
+        // 12. 初始化渠道管理器（传入工具注册器和设置管理器）
         this.channelManager = new ChannelManager(this.configManager, toolRegistry, this.settingsManager);
         
-        // 9. 设置重试状态回调
+        // 13. 设置重试状态回调
         this.channelManager.setRetryStatusCallback((status) => {
             this.handleRetryStatus(status);
         });
         
-        // 10. 设置全局渠道管理器引用
+        // 14. 设置全局渠道管理器引用
         setGlobalChannelManager(this.channelManager);
         
-        // 11. 初始化检查点管理器
+        // 15. 初始化检查点管理器（使用自定义路径）
         this.checkpointManager = new CheckpointManager(
             this.settingsManager,
             this.conversationManager,
-            this.context
+            this.context,
+            this.storagePathManager.getEffectiveDataPath()
         );
         await this.checkpointManager.initialize();
         
-        // 12. 初始化聊天处理器（传入工具注册器和检查点管理器）
+        // 16. 初始化聊天处理器（传入工具注册器和检查点管理器）
         this.chatHandler = new ChatHandler(
             this.configManager,
             this.channelManager,
@@ -176,30 +192,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
         this.chatHandler.setCheckpointManager(this.checkpointManager);
         this.chatHandler.setSettingsManager(this.settingsManager);
+        this.chatHandler.setDiffStorageManager(this.diffStorageManager);
         
-        // 13. 初始化模型管理处理器
+        // 17. 初始化模型管理处理器
         this.modelsHandler = new ModelsHandler(this.configManager);
         
-        // 14. 初始化设置处理器（传入工具注册器）
+        // 18. 初始化设置处理器（传入工具注册器）
         this.settingsHandler = new SettingsHandler(this.settingsManager, toolRegistry);
         
-        // 15. 订阅终端输出事件
+        // 19. 订阅终端输出事件
         this.terminalOutputUnsubscribe = onTerminalOutput((event) => {
             this.handleTerminalOutputEvent(event);
         });
         
-        // 16. 订阅图像生成输出事件
+        // 20. 订阅图像生成输出事件
         this.imageGenOutputUnsubscribe = onImageGenOutput((event) => {
             this.handleImageGenOutputEvent(event);
         });
         
-        // 17. 订阅统一任务事件（用于未来扩展）
+        // 21. 订阅统一任务事件（用于未来扩展）
         this.taskEventUnsubscribe = TaskManager.onTaskEvent((event) => {
             this.handleTaskEvent(event);
         });
         
-        // 18. 初始化 MCP 管理器（使用 JSON 文件存储）
-        const mcpConfigDir = vscode.Uri.joinPath(this.context.globalStorageUri, 'mcp');
+        // 22. 初始化 MCP 管理器（使用自定义路径下的 mcp 目录）
+        const mcpConfigDir = vscode.Uri.file(this.storagePathManager.getMcpPath());
         // 确保目录存在
         try {
             await vscode.workspace.fs.stat(mcpConfigDir);
@@ -211,27 +228,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.mcpManager = new McpManager(mcpStorage);
         await this.mcpManager.initialize();
         
-        // 19. 将 MCP 管理器连接到 ChannelManager（用于工具声明）
+        // 23. 将 MCP 管理器连接到 ChannelManager（用于工具声明）
         this.channelManager.setMcpManager(this.mcpManager);
         
-        // 20. 将 MCP 管理器连接到 ChatHandler（用于工具调用）
+        // 24. 将 MCP 管理器连接到 ChatHandler（用于工具调用）
         this.chatHandler.setMcpManager(this.mcpManager);
         
-        // 21. 初始化依赖管理器
-        this.dependencyManager = DependencyManager.getInstance(this.context);
+        // 25. 初始化依赖管理器（使用自定义路径）
+        this.dependencyManager = DependencyManager.getInstance(
+            this.context,
+            this.storagePathManager.getDependenciesPath()
+        );
         await this.dependencyManager.initialize();
         
-        // 22. 设置依赖检查器到工具注册器（用于过滤未安装依赖的工具）
+        // 26. 设置依赖检查器到工具注册器（用于过滤未安装依赖的工具）
         toolRegistry.setDependencyChecker({
             isInstalled: (name: string) => this.dependencyManager.isInstalledSync(name)
         });
         
-        // 23. 订阅依赖安装进度事件
+        // 27. 订阅依赖安装进度事件
         this.dependencyProgressUnsubscribe = this.dependencyManager.onProgress((event) => {
             this.handleDependencyProgressEvent(event);
         });
         
         console.log('LimCode backend initialized with global context');
+        console.log('Effective data path:', this.storagePathManager.getEffectiveDataPath());
     }
     
     /**
@@ -1011,6 +1032,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     break;
                 }
                 
+                case 'diff.loadContent': {
+                    try {
+                        const { diffContentId } = data;
+                        const content = await this.diffStorageManager.loadGlobalDiff(diffContentId);
+                        if (content) {
+                            this.sendResponse(requestId, {
+                                success: true,
+                                originalContent: content.originalContent,
+                                newContent: content.newContent,
+                                filePath: content.filePath
+                            });
+                        } else {
+                            this.sendResponse(requestId, {
+                                success: false,
+                                error: t('webview.errors.diffContentNotFound')
+                            });
+                        }
+                    } catch (error: any) {
+                        this.sendError(requestId, 'LOAD_DIFF_CONTENT_ERROR', error.message || t('webview.errors.loadDiffContentFailed'));
+                    }
+                    break;
+                }
+                
                 // ========== 工作区信息 ==========
                 
                 case 'getWorkspaceUri': {
@@ -1547,6 +1591,130 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     } catch (error: any) {
                         this.sendError(requestId, 'REVEAL_IN_EXPLORER_ERROR', error.message || t('webview.errors.cannotRevealInExplorer'));
                     }
+                    break;
+                }
+                
+                // ========== 存储路径管理 ==========
+                
+                case 'storagePath.getConfig': {
+                    try {
+                        const config = this.settingsManager.getStoragePathConfig();
+                        const defaultPath = this.storagePathManager.getDefaultDataPath();
+                        const effectivePath = this.storagePathManager.getEffectiveDataPath();
+                        this.sendResponse(requestId, {
+                            config,
+                            defaultPath,
+                            effectivePath
+                        });
+                    } catch (error: any) {
+                        this.sendError(requestId, 'GET_STORAGE_PATH_CONFIG_ERROR', error.message || t('webview.errors.getStoragePathConfigFailed'));
+                    }
+                    break;
+                }
+                
+                case 'storagePath.getStats': {
+                    try {
+                        const { path: targetPath } = data;
+                        const stats = await this.storagePathManager.getStorageStats(targetPath);
+                        this.sendResponse(requestId, { stats });
+                    } catch (error: any) {
+                        this.sendError(requestId, 'GET_STORAGE_STATS_ERROR', error.message || t('webview.errors.getStorageStatsFailed'));
+                    }
+                    break;
+                }
+                
+                case 'storagePath.validate': {
+                    try {
+                        const { path: targetPath } = data;
+                        const result = await this.storagePathManager.validatePath(targetPath);
+                        this.sendResponse(requestId, result);
+                    } catch (error: any) {
+                        this.sendError(requestId, 'VALIDATE_STORAGE_PATH_ERROR', error.message || t('webview.errors.validateStoragePathFailed'));
+                    }
+                    break;
+                }
+                
+                case 'storagePath.migrate': {
+                    try {
+                        const { path: newPath } = data;
+                        const result = await this.storagePathManager.migrateData(newPath, (status) => {
+                            // 发送迁移进度到前端
+                            this._view?.webview.postMessage({
+                                type: 'storageMigrationProgress',
+                                data: status
+                            });
+                        });
+                        this.sendResponse(requestId, result);
+                    } catch (error: any) {
+                        this.sendError(requestId, 'MIGRATE_STORAGE_ERROR', error.message || t('webview.errors.migrateStorageFailed'));
+                    }
+                    break;
+                }
+                
+                case 'storagePath.cleanup': {
+                    try {
+                        const result = await this.storagePathManager.cleanupOldStorage();
+                        this.sendResponse(requestId, result);
+                    } catch (error: any) {
+                        this.sendError(requestId, 'CLEANUP_STORAGE_ERROR', error.message || t('webview.errors.cleanupStorageFailed'));
+                    }
+                    break;
+                }
+                
+                case 'storagePath.reset': {
+                    try {
+                        const result = await this.storagePathManager.resetToDefault((status) => {
+                            // 发送迁移进度到前端
+                            this._view?.webview.postMessage({
+                                type: 'storageMigrationProgress',
+                                data: status
+                            });
+                        });
+                        this.sendResponse(requestId, result);
+                    } catch (error: any) {
+                        this.sendError(requestId, 'RESET_STORAGE_PATH_ERROR', error.message || t('webview.errors.resetStoragePathFailed'));
+                    }
+                    break;
+                }
+                
+                case 'storagePath.selectFolder': {
+                    try {
+                        const result = await vscode.window.showOpenDialog({
+                            canSelectFiles: false,
+                            canSelectFolders: true,
+                            canSelectMany: false,
+                            title: t('webview.dialogs.selectStorageFolder'),
+                            openLabel: t('webview.dialogs.selectFolder')
+                        });
+                        
+                        if (result && result.length > 0) {
+                            this.sendResponse(requestId, { path: result[0].fsPath });
+                        } else {
+                            this.sendResponse(requestId, { path: null });
+                        }
+                    } catch (error: any) {
+                        this.sendError(requestId, 'SELECT_FOLDER_ERROR', error.message || t('webview.errors.selectFolderFailed'));
+                    }
+                    break;
+                }
+                
+                case 'storagePath.openInExplorer': {
+                    try {
+                        const { path: targetPath } = data;
+                        const pathToOpen = targetPath || this.storagePathManager.getEffectiveDataPath();
+                        await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(pathToOpen));
+                        this.sendResponse(requestId, { success: true });
+                    } catch (error: any) {
+                        this.sendError(requestId, 'OPEN_IN_EXPLORER_ERROR', error.message || t('webview.errors.openInExplorerFailed'));
+                    }
+                    break;
+                }
+                
+                case 'reloadWindow': {
+                    // 重新加载 VSCode 窗口
+                    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+                    // 这个响应不会真正发送，因为窗口会重新加载
+                    this.sendResponse(requestId, { success: true });
                     break;
                 }
                 
@@ -2506,8 +2674,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      * 处理打开 MCP 配置文件
      */
     private async handleOpenMcpConfigFile(): Promise<void> {
-        // MCP 配置文件路径
-        const mcpConfigDir = path.join(this.context.globalStorageUri.fsPath, 'mcp');
+        // MCP 配置文件路径（使用 storagePathManager 支持自定义存储路径）
+        const mcpConfigDir = this.storagePathManager.getMcpPath();
         const mcpConfigFile = path.join(mcpConfigDir, 'servers.json');
         
         // 确保目录存在
@@ -2721,10 +2889,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      */
     private async handleRevealConversationInExplorer(conversationId: string): Promise<void> {
         // 构建对话文件路径
-        // FileSystemStorageAdapter 使用的路径是 {baseDir}/conversations/{conversationId}.json
-        // baseDir 是 globalStorageUri
-        const conversationsDir = vscode.Uri.joinPath(this.context.globalStorageUri, 'conversations');
-        const conversationFile = vscode.Uri.joinPath(conversationsDir, `${conversationId}.json`);
+        // 使用 storagePathManager 获取正确的对话目录（支持自定义存储路径）
+        const conversationsDir = this.storagePathManager.getConversationsPath();
+        const conversationFile = vscode.Uri.file(path.join(conversationsDir, `${conversationId}.json`));
         
         // 检查文件是否存在
         try {
@@ -2765,8 +2932,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             
             // 优先使用 result 中的完整文件内容（如果有）
             const resultData = result?.data as Record<string, unknown> | undefined;
-            const fullOriginalContent = resultData?.originalContent as string | undefined;
-            const fullNewContent = resultData?.newContent as string | undefined;
+            let fullOriginalContent = resultData?.originalContent as string | undefined;
+            let fullNewContent = resultData?.newContent as string | undefined;
+            
+            // 如果有 diffContentId，按需加载 diff 内容
+            const diffContentId = resultData?.diffContentId as string | undefined;
+            if (diffContentId && (!fullOriginalContent || !fullNewContent)) {
+                try {
+                    const loadedContent = await this.diffStorageManager.loadGlobalDiff(diffContentId);
+                    if (loadedContent) {
+                        fullOriginalContent = loadedContent.originalContent;
+                        fullNewContent = loadedContent.newContent;
+                    }
+                } catch (e) {
+                    console.warn('Failed to load diff content:', e);
+                }
+            }
             
             let originalContent: string;
             let newContent: string;
@@ -2797,25 +2978,120 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 preview: true
             });
             
+        } else if (toolName === 'search_in_files') {
+            // 对于 search_in_files 的替换模式，显示每个文件的差异
+            const resultData = result?.data as Record<string, unknown> | undefined;
+            const isReplaceMode = resultData?.isReplaceMode as boolean | undefined;
+            
+            if (!isReplaceMode) {
+                throw new Error(t('webview.errors.searchNotReplaceMode'));
+            }
+            
+            const replaceResults = resultData?.results as Array<{
+                file: string;
+                replacements: number;
+                diffContentId?: string;
+            }> | undefined;
+            
+            if (!replaceResults || replaceResults.length === 0) {
+                throw new Error(t('webview.errors.noReplaceResults'));
+            }
+            
+            // 为每个文件打开 diff 视图
+            for (const replaceResult of replaceResults) {
+                if (!replaceResult.diffContentId) {
+                    continue;
+                }
+                
+                try {
+                    const loadedContent = await this.diffStorageManager.loadGlobalDiff(replaceResult.diffContentId);
+                    if (loadedContent) {
+                        const originalContent = loadedContent.originalContent;
+                        const newContent = loadedContent.newContent;
+                        const diffTitle = t('webview.messages.searchReplaceDiffPreview', { filePath: replaceResult.file });
+                        
+                        // 创建虚拟文档 URI
+                        const originalUri = vscode.Uri.parse(`limcode-diff-preview:original/${encodeURIComponent(replaceResult.file)}`);
+                        const newUri = vscode.Uri.parse(`limcode-diff-preview:modified/${encodeURIComponent(replaceResult.file)}`);
+                        
+                        // 注册内容到提供者
+                        this.diffPreviewProvider.setContent(originalUri.toString(), originalContent);
+                        this.diffPreviewProvider.setContent(newUri.toString(), newContent);
+                        
+                        // 打开 diff 视图（使用 preview: false 确保每个文件都有独立的标签页）
+                        await vscode.commands.executeCommand('vscode.diff', originalUri, newUri, diffTitle, {
+                            preview: false
+                        });
+                    }
+                } catch (e) {
+                    console.warn('Failed to load diff content for search_in_files:', e);
+                }
+            }
+            
         } else if (toolName === 'write_file') {
-            // 对于 write_file，显示写入的内容（没有原始内容比较）
+            // 对于 write_file，显示写入的内容差异
             const files = args.files as Array<{ path: string; content: string }>;
             
             if (!files || files.length === 0) {
                 throw new Error(t('webview.errors.noFileContent'));
             }
             
-            // 如果只有一个文件，直接打开内容预览
-            // 如果有多个文件，打开第一个并提示
+            // 从 result 中获取每个文件的 diffContentId
+            const resultData = result?.data as Record<string, unknown> | undefined;
+            const writeResults = resultData?.results as Array<{
+                path: string;
+                diffContentId?: string;
+                action?: 'created' | 'modified' | 'unchanged';
+            }> | undefined;
+            
+            // 创建路径到 diffContentId 的映射
+            const diffContentIdMap = new Map<string, string>();
+            if (writeResults) {
+                for (const r of writeResults) {
+                    if (r.diffContentId) {
+                        diffContentIdMap.set(r.path, r.diffContentId);
+                    }
+                }
+            }
+            
+            // 处理每个文件
             for (const file of files) {
-                const newUri = vscode.Uri.parse(`limcode-diff-preview:new-file/${encodeURIComponent(file.path)}`);
-                this.diffPreviewProvider.setContent(newUri.toString(), file.content);
+                let originalContent = '';
+                let newContent = file.content;
+                let diffTitle: string;
                 
-                // 作为新建文件预览（与空内容比较）
-                const emptyUri = vscode.Uri.parse(`limcode-diff-preview:empty/${encodeURIComponent(file.path)}`);
-                this.diffPreviewProvider.setContent(emptyUri.toString(), '');
+                // 尝试使用 diffContentId 加载完整的 diff 内容
+                const diffContentId = diffContentIdMap.get(file.path);
+                if (diffContentId) {
+                    try {
+                        const loadedContent = await this.diffStorageManager.loadGlobalDiff(diffContentId);
+                        if (loadedContent) {
+                            originalContent = loadedContent.originalContent;
+                            newContent = loadedContent.newContent;
+                            diffTitle = t('webview.messages.fullFileDiffPreview', { filePath: file.path });
+                        } else {
+                            // 加载失败，作为新建文件预览
+                            diffTitle = t('webview.messages.newFileContentPreview', { filePath: file.path });
+                        }
+                    } catch (e) {
+                        console.warn('Failed to load diff content for write_file:', e);
+                        diffTitle = t('webview.messages.newFileContentPreview', { filePath: file.path });
+                    }
+                } else {
+                    // 没有 diffContentId，作为新建文件预览
+                    diffTitle = t('webview.messages.newFileContentPreview', { filePath: file.path });
+                }
                 
-                await vscode.commands.executeCommand('vscode.diff', emptyUri, newUri, t('webview.messages.newFileContentPreview', { filePath: file.path }), {
+                // 创建虚拟文档 URI
+                const originalUri = vscode.Uri.parse(`limcode-diff-preview:original/${encodeURIComponent(file.path)}`);
+                const newUri = vscode.Uri.parse(`limcode-diff-preview:modified/${encodeURIComponent(file.path)}`);
+                
+                // 注册内容到提供者
+                this.diffPreviewProvider.setContent(originalUri.toString(), originalContent);
+                this.diffPreviewProvider.setContent(newUri.toString(), newContent);
+                
+                // 打开 diff 视图
+                await vscode.commands.executeCommand('vscode.diff', originalUri, newUri, diffTitle, {
                     preview: true
                 });
             }

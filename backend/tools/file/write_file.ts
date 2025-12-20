@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import type { Tool, ToolResult } from '../types';
 import { resolveUriWithInfo, getAllWorkspaces } from '../utils';
 import { getDiffManager } from './diffManager';
+import { getDiffStorageManager } from '../../modules/conversation';
 
 /**
  * 单个文件写入配置
@@ -22,19 +23,16 @@ interface WriteFileEntry {
 
 /**
  * 单个文件写入结果
+ * 简化版：AI 已经知道写入的内容，不需要重复返回
  */
 interface WriteResult {
     path: string;
-    workspace?: string;
     success: boolean;
     action?: 'created' | 'modified' | 'unchanged';
-    diffId?: string;
-    status?: string;
-    originalSize?: number;
-    newSize?: number;
-    lineCount?: number;
+    status?: 'accepted' | 'rejected' | 'pending';
     error?: string;
-    pendingReview?: boolean;
+    /** 前端按需加载 diff 内容用 */
+    diffContentId?: string;
 }
 
 /**
@@ -78,12 +76,8 @@ async function writeSingleFile(entry: WriteFileEntry, isMultiRoot: boolean): Pro
         if (originalContent === content) {
             return {
                 path: filePath,
-                workspace: workspaceName,
                 success: true,
-                action: 'unchanged',
-                originalSize: originalContent.length,
-                newSize: content.length,
-                lineCount: content.split('\n').length
+                action: 'unchanged'
             };
         }
 
@@ -128,38 +122,46 @@ async function writeSingleFile(entry: WriteFileEntry, isMultiRoot: boolean): Pro
         const finalDiff = diffManager.getDiff(pendingDiff.id);
         const wasAccepted = !wasInterrupted && (!finalDiff || finalDiff.status === 'accepted');
         
+        // 尝试将内容保存到 DiffStorageManager，供前端按需加载
+        const diffStorageManager = getDiffStorageManager();
+        let diffContentId: string | undefined;
+        
+        if (diffStorageManager) {
+            try {
+                const diffRef = await diffStorageManager.saveGlobalDiff({
+                    originalContent,
+                    newContent: content,
+                    filePath
+                });
+                diffContentId = diffRef.diffId;
+            } catch (e) {
+                console.warn('Failed to save diff content to storage:', e);
+            }
+        }
+        
         if (wasInterrupted) {
+            // 简化返回：AI 已经知道写入的内容，不需要重复返回
             return {
                 path: filePath,
-                workspace: workspaceName,
                 success: true,  // 用户主动中断，不算失败
                 action: fileExists ? 'modified' : 'created',
-                diffId: pendingDiff.id,
                 status: 'pending',
-                originalSize: originalContent.length,
-                newSize: content.length,
-                lineCount: content.split('\n').length,
-                pendingReview: true,
-                error: `File ${filePath} is still pending review. User may not have saved the changes yet.`
+                diffContentId
             };
         }
         
+        // 简化返回：AI 已经知道写入的内容，不需要重复返回
         return {
             path: filePath,
-            workspace: workspaceName,
             success: wasAccepted,
             action: fileExists ? 'modified' : 'created',
-            diffId: pendingDiff.id,
             status: wasAccepted ? 'accepted' : 'rejected',
-            originalSize: originalContent.length,
-            newSize: content.length,
-            lineCount: content.split('\n').length,
-            error: wasAccepted ? undefined : 'Diff was rejected'
+            error: wasAccepted ? undefined : 'Diff was rejected',
+            diffContentId
         };
     } catch (error) {
         return {
             path: filePath,
-            workspace: workspaceName,
             success: false,
             error: error instanceof Error ? error.message : String(error)
         };
@@ -251,19 +253,14 @@ export function createWriteFileTool(): Tool {
 
             const allSuccess = failCount === 0;
             
+            // 简化返回：AI 已经知道写入的内容，只需要知道结果
             return {
                 success: allSuccess,
                 data: {
                     results,
                     successCount,
                     failCount,
-                    createdCount,
-                    modifiedCount,
-                    unchangedCount,
-                    totalCount: fileList.length,
-                    autoSave: settings.autoSave,
-                    autoSaveDelay: settings.autoSaveDelay,
-                    multiRoot: isMultiRoot
+                    totalCount: fileList.length
                 },
                 error: allSuccess ? undefined : `${failCount} files failed to write`
             };

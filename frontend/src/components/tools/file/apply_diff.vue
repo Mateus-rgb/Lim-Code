@@ -40,8 +40,15 @@ const filePath = computed(() => {
 })
 
 // 获取 diff 列表
+// 优先从 result.data.diffs 获取（包含实际匹配的行号），否则使用 args.diffs
 const diffList = computed((): DiffBlock[] => {
-  const diffs = props.args.diffs as DiffBlock[] | undefined
+  // 优先使用 result.data.diffs（后端返回的带有实际匹配行号的 diffs）
+  const resultDiffs = (props.result?.data as Record<string, any>)?.diffs as DiffBlock[] | undefined
+  const argsDiffs = props.args.diffs as DiffBlock[] | undefined
+  
+  // 优先使用 resultDiffs（包含后端计算的实际匹配行号）
+  const diffs = resultDiffs ?? argsDiffs
+  
   return diffs && Array.isArray(diffs) ? diffs : []
 })
 

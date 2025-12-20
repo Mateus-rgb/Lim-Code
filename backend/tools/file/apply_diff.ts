@@ -9,6 +9,7 @@ import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { getDiffManager } from './diffManager';
 import { resolveUriWithInfo, getAllWorkspaces } from '../utils';
+import { getDiffStorageManager } from '../../modules/conversation';
 
 /**
  * 单个 diff 块
@@ -37,7 +38,7 @@ function applyDiffToContent(
     search: string,
     replace: string,
     startLine?: number
-): { success: boolean; result: string; error?: string; matchCount: number } {
+): { success: boolean; result: string; error?: string; matchCount: number; matchedLine?: number } {
     const normalizedContent = normalizeLineEndings(content);
     const normalizedSearch = normalizeLineEndings(search);
     const normalizedReplace = normalizeLineEndings(replace);
@@ -75,6 +76,10 @@ function applyDiffToContent(
             };
         }
         
+        // 计算实际匹配的行号
+        const textBeforeMatch = normalizedContent.substring(0, charOffset + matchIndex);
+        const actualMatchedLine = textBeforeMatch.split('\n').length;
+        
         // 执行替换
         const result =
             normalizedContent.substring(0, charOffset + matchIndex) +
@@ -84,7 +89,8 @@ function applyDiffToContent(
         return {
             success: true,
             result,
-            matchCount: 1
+            matchCount: 1,
+            matchedLine: actualMatchedLine
         };
     }
     
@@ -109,13 +115,19 @@ function applyDiffToContent(
         };
     }
     
+    // 计算实际匹配的行号
+    const matchIndex = normalizedContent.indexOf(normalizedSearch);
+    const textBeforeMatch = normalizedContent.substring(0, matchIndex);
+    const actualMatchedLine = textBeforeMatch.split('\n').length;
+    
     // 精确替换
     const result = normalizedContent.replace(normalizedSearch, normalizedReplace);
     
     return {
         success: true,
         result,
-        matchCount: 1
+        matchCount: 1,
+        matchedLine: actualMatchedLine
     };
 }
 
@@ -149,10 +161,11 @@ Parameters:
 Each diff object contains:
 - search: The exact content to search for (must match 100%)
 - replace: The content to replace with
-- start_line: (optional) The line number (1-based) where search starts
+- start_line: (REQUIRED) The line number (1-based) where search content starts in the original file
 
 Important:
 - The 'search' content must match EXACTLY (100% match required)
+- The 'start_line' parameter is REQUIRED for accurate diff positioning
 - Include enough context to make the search unique
 - Diffs are applied in order
 - If any diff fails, the entire operation is rolled back${descriptionSuffix}`,
@@ -180,10 +193,10 @@ Important:
                                 },
                                 start_line: {
                                     type: 'number',
-                                    description: 'Line number (1-based) where search starts'
+                                    description: 'Line number (1-based) where search content starts in the original file (REQUIRED)'
                                 }
                             },
-                            required: ['search', 'replace']
+                            required: ['search', 'replace', 'start_line']
                         }
                     }
                 },
@@ -217,6 +230,9 @@ Important:
                 let currentContent = originalContent;
                 const results: Array<{ index: number; success: boolean; error?: string }> = [];
                 
+                // 保存每个 diff 的实际匹配行号
+                const matchedLines: number[] = [];
+                
                 // 依次应用每个 diff
                 for (let i = 0; i < diffs.length; i++) {
                     const diff = diffs[i];
@@ -236,7 +252,13 @@ Important:
                         error: result.error
                     });
                     
+                    // 保存实际匹配的行号
+                    if (result.matchedLine !== undefined) {
+                        matchedLines.push(result.matchedLine);
+                    }
+                    
                     if (!result.success) {
+                        // 简化返回：只返回必要的错误信息，AI 已经知道 diffs 内容
                         return {
                             success: false,
                             error: `Diff at index ${i} failed: ${result.error}`,
@@ -244,14 +266,19 @@ Important:
                                 file: filePath,
                                 failedIndex: i,
                                 appliedCount: i,
-                                totalCount: diffs.length,
-                                results
+                                totalCount: diffs.length
                             }
                         };
                     }
                     
                     currentContent = result.result;
                 }
+                
+                // 将实际匹配的行号添加到 diffs 数组中（用于前端显示）
+                const diffsWithMatchedLines = diffs.map((diff, i) => ({
+                    ...diff,
+                    start_line: matchedLines[i] ?? diff.start_line ?? 1
+                }));
                 
                 // 所有 diff 都成功，创建待审阅的 diff
                 const diffManager = getDiffManager();
@@ -289,25 +316,46 @@ Important:
                 const finalDiff = diffManager.getDiff(pendingDiff.id);
                 const wasAccepted = !wasInterrupted && (!finalDiff || finalDiff.status === 'accepted');
                 
+                // 尝试将大内容保存到 DiffStorageManager
+                // 这样可以减少对话历史的大小，前端按需加载
+                const diffStorageManager = getDiffStorageManager();
+                let diffContentId: string | undefined;
+                
+                if (diffStorageManager) {
+                    try {
+                        const diffRef = await diffStorageManager.saveGlobalDiff({
+                            originalContent,
+                            newContent: currentContent,
+                            filePath
+                        });
+                        diffContentId = diffRef.diffId;
+                    } catch (e) {
+                        // 如果保存失败，仍然返回内联内容作为后备
+                        console.warn('Failed to save diff content to storage:', e);
+                    }
+                }
+                
                 if (wasInterrupted) {
+                    // 简化返回：AI 已经知道 diffs 内容，不需要重复返回
+                    // 只返回结果状态和前端需要的引用信息
                     return {
                         success: true,  // 用户主动中断，不算失败
                         data: {
                             file: filePath,
-                            message: `Diff for ${filePath} is still pending. User may not have reviewed/saved the changes yet. The file may still contain the original content or unsaved modifications.`,
-                            diffId: pendingDiff.id,
+                            message: `Diff for ${filePath} is still pending. User may not have reviewed/saved the changes yet.`,
                             status: 'pending',
                             diffCount: diffs.length,
                             appliedCount: diffs.length,
-                            pendingReview: true,
-                            results: diffs.length > 1 ? results : undefined,
-                            // 保存原始内容和新内容，供前端显示完整 diff 视图
-                            originalContent,
-                            newContent: currentContent
+                            // 仅供前端按需加载用，不发送给 AI
+                            diffContentId,
+                            // 带有实际匹配行号的 diffs 供前端显示（仅存储用，getHistoryForAPI 会过滤）
+                            diffs: diffsWithMatchedLines
                         }
                     };
                 }
                 
+                // 简化返回：AI 已经知道 diffs 内容，不需要重复返回
+                // 只返回结果状态和前端需要的引用信息
                 return {
                     success: wasAccepted,
                     data: {
@@ -315,14 +363,13 @@ Important:
                         message: wasAccepted
                             ? `Diff applied and saved to ${filePath}`
                             : `Diff was rejected for ${filePath}`,
-                        diffId: pendingDiff.id,
                         status: wasAccepted ? 'accepted' : 'rejected',
                         diffCount: diffs.length,
                         appliedCount: diffs.length,
-                        results: diffs.length > 1 ? results : undefined,
-                        // 保存原始内容和新内容，供前端显示完整 diff 视图
-                        originalContent,
-                        newContent: currentContent
+                        // 仅供前端按需加载用，不发送给 AI
+                        diffContentId,
+                        // 带有实际匹配行号的 diffs 供前端显示（仅存储用，getHistoryForAPI 会过滤）
+                        diffs: diffsWithMatchedLines
                     }
                 };
             } catch (error) {

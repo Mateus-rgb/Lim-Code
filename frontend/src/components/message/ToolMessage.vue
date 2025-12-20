@@ -174,7 +174,7 @@ function getDiffFilePaths(tool: ToolUsage): string[] {
   const config = getToolConfig(tool.name)
   if (!config?.getDiffFilePath) return []
   
-  const result = config.getDiffFilePath(tool.args)
+  const result = config.getDiffFilePath(tool.args, tool.result as Record<string, unknown> | undefined)
   if (Array.isArray(result)) return result
   return result ? [result] : []
 }

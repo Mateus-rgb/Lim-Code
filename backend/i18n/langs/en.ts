@@ -100,6 +100,17 @@ const en: BackendLanguageMessages = {
                 loadFailed: 'Failed to load settings',
                 saveFailed: 'Failed to save settings',
                 invalidValue: 'Invalid setting value'
+            },
+            storage: {
+                pathNotAbsolute: 'Path must be absolute: {path}',
+                pathNotDirectory: 'Path must be a directory: {path}',
+                createDirectoryFailed: 'Failed to create directory: {error}',
+                migrationFailed: 'Migration failed: {error}',
+                migrationSuccess: 'Storage migration completed',
+                migratingFiles: 'Migrating files...',
+                migratingConversations: 'Migrating conversations...',
+                migratingCheckpoints: 'Migrating checkpoints...',
+                migratingConfigs: 'Migrating configs...'
             }
         },
 
@@ -398,6 +409,8 @@ Requirements:
             getConversationsWithCheckpointsFailed: 'Failed to get conversations with checkpoints',
             
             openDiffPreviewFailed: 'Failed to open diff preview',
+            diffContentNotFound: 'Diff content not found or expired',
+            loadDiffContentFailed: 'Failed to load diff content',
             invalidDiffData: 'Invalid diff data',
             noFileContent: 'No file content',
             unsupportedToolType: 'Unsupported tool type: {toolName}',
@@ -446,12 +459,23 @@ Requirements:
             getInstallPathFailed: 'Failed to get install path',
             
             showNotificationFailed: 'Failed to show notification',
-            rejectToolCallsFailed: 'Failed to reject tool calls'
+            rejectToolCallsFailed: 'Failed to reject tool calls',
+            
+            getStorageConfigFailed: 'Failed to get storage config',
+            updateStorageConfigFailed: 'Failed to update storage config',
+            validateStoragePathFailed: 'Failed to validate storage path',
+            migrateStorageFailed: 'Failed to migrate storage'
         },
         
         messages: {
             historyDiffPreview: '{filePath} (History diff preview)',
-            newFileContentPreview: '{filePath} (New content preview)'
+            newFileContentPreview: '{filePath} (New content preview)',
+            fullFileDiffPreview: '{filePath} (Full file diff preview)',
+            searchReplaceDiffPreview: '{filePath} (Search replace diff preview)'
+        },
+        dialogs: {
+            selectStorageFolder: 'Select Storage Folder',
+            selectFolder: 'Select Folder'
         }
     },
 

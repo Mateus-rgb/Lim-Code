@@ -30,7 +30,9 @@ import type {
     DiagnosticsConfig,
     PinnedFilesConfig,
     PinnedFileItem,
-    SystemPromptConfig
+    SystemPromptConfig,
+    StoragePathConfig,
+    StorageStats
 } from './types';
 import {
     DEFAULT_GLOBAL_SETTINGS,
@@ -1438,6 +1440,88 @@ export class SettingsManager {
                 console.error('Settings change listener error:', error);
             });
         }
+    }
+    
+    // ========== 存储路径管理 ==========
+    
+    /**
+     * 获取存储路径配置
+     */
+    getStoragePathConfig(): Readonly<StoragePathConfig> {
+        return this.settings.storagePath || {};
+    }
+    
+    /**
+     * 获取自定义数据存储路径
+     * 如果未设置返回 undefined
+     */
+    getCustomDataPath(): string | undefined {
+        return this.settings.storagePath?.customDataPath;
+    }
+    
+    /**
+     * 更新存储路径配置
+     */
+    async updateStoragePathConfig(config: Partial<StoragePathConfig>): Promise<void> {
+        const oldConfig = this.getStoragePathConfig();
+        const newConfig = {
+            ...oldConfig,
+            ...config
+        };
+        
+        this.settings.storagePath = newConfig;
+        this.settings.lastUpdated = Date.now();
+        
+        await this.storage.save(this.settings);
+        
+        this.notifyChange({
+            type: 'full',
+            path: 'storagePath',
+            oldValue: oldConfig,
+            newValue: newConfig,
+            settings: this.settings
+        });
+    }
+    
+    /**
+     * 设置自定义数据存储路径
+     * 设置后需要迁移数据
+     */
+    async setCustomDataPath(path: string | undefined): Promise<void> {
+        await this.updateStoragePathConfig({
+            customDataPath: path,
+            migrationStatus: path ? 'pending' : 'none'
+        });
+    }
+    
+    /**
+     * 标记迁移开始
+     */
+    async markMigrationStarted(): Promise<void> {
+        await this.updateStoragePathConfig({
+            migrationStatus: 'in_progress'
+        });
+    }
+    
+    /**
+     * 标记迁移完成
+     */
+    async markMigrationCompleted(): Promise<void> {
+        await this.updateStoragePathConfig({
+            migrationStatus: 'completed',
+            lastMigrationAt: Date.now(),
+            migrationError: undefined
+        });
+    }
+    
+    /**
+     * 标记迁移失败
+     */
+    async markMigrationFailed(error: string): Promise<void> {
+        await this.updateStoragePathConfig({
+            migrationStatus: 'failed',
+            migrationError: error
+        });
     }
     
     // ========== 工具方法 ==========

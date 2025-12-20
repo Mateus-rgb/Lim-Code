@@ -790,6 +790,8 @@ export class ConversationManager {
          * 如果对应的 functionCall 被标记为 rejected，
          * 需要将 response 修改为表示被拒绝的状态，
          * 这样 AI 才能知道工具没有被执行
+         *
+         * 同时清理不应发送给 AI 的内部字段（如 diffContentId）
          */
         const processFunctionResponse = (part: ContentPart): ContentPart => {
             if (!part.functionResponse) {
@@ -812,7 +814,57 @@ export class ConversationManager {
                 };
             }
             
-            return part;
+            // 清理不应发送给 AI 的内部字段
+            // diffContentId - 内部使用的 diff 内容引用 ID
+            // diffId - 内部使用的 diff 操作 ID
+            // diffs - AI 在 functionCall 中已经发送过的内容，不需要重复
+            // toolId - 媒体工具使用的任务 ID，用于取消操作，AI 不需要
+            // terminalId - 终端命令使用的进程 ID，用于终止进程，AI 不需要
+            // multiRoot - 是否多工作区模式，AI 已从工具声明中知道，不需要重复
+            // command/cwd/shell - execute_command 的元数据，AI 已知（在 functionCall 中）
+            // 保留: killed/duration - AI 需要知道命令是否被用户终止、执行了多久
+            let cleanedResponse = part.functionResponse.response;
+            if (cleanedResponse && typeof cleanedResponse === 'object') {
+                const { diffContentId, diffId, diffs, ...rest } = cleanedResponse as Record<string, unknown>;
+                // 检查 data 字段中是否也有这些字段
+                if (rest.data && typeof rest.data === 'object') {
+                    const {
+                        diffContentId: dataDiffContentId,
+                        diffId: dataDiffId,
+                        diffs: dataDiffs,
+                        toolId: dataToolId,
+                        terminalId: dataTerminalId,
+                        multiRoot: dataMultiRoot,
+                        // execute_command 的元数据，AI 已知
+                        command: dataCommand,
+                        cwd: dataCwd,
+                        shell: dataShell,
+                        ...dataRest
+                    } = rest.data as Record<string, unknown>;
+                    
+                    // 检查 data.results 数组中的每个元素是否也有 diffContentId（如 search_in_files 的替换结果）
+                    if (Array.isArray(dataRest.results)) {
+                        dataRest.results = (dataRest.results as Array<Record<string, unknown>>).map(item => {
+                            if (item && typeof item === 'object') {
+                                const { diffContentId: itemDiffContentId, ...itemRest } = item;
+                                return itemRest;
+                            }
+                            return item;
+                        });
+                    }
+                    
+                    rest.data = dataRest;
+                }
+                cleanedResponse = rest;
+            }
+            
+            return {
+                ...part,
+                functionResponse: {
+                    ...part.functionResponse,
+                    response: cleanedResponse
+                }
+            };
         };
         
         /**

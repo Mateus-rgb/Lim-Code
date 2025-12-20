@@ -100,6 +100,17 @@ const zhCN: BackendLanguageMessages = {
                 loadFailed: '加载设置失败',
                 saveFailed: '保存设置失败',
                 invalidValue: '无效的设置值'
+            },
+            storage: {
+                pathNotAbsolute: '路径必须是绝对路径: {path}',
+                pathNotDirectory: '路径必须是目录: {path}',
+                createDirectoryFailed: '创建目录失败: {error}',
+                migrationFailed: '迁移失败: {error}',
+                migrationSuccess: '存储迁移完成',
+                migratingFiles: '正在迁移文件...',
+                migratingConversations: '正在迁移对话...',
+                migratingCheckpoints: '正在迁移存档点...',
+                migratingConfigs: '正在迁移配置...'
             }
         },
 
@@ -398,6 +409,8 @@ const zhCN: BackendLanguageMessages = {
             getConversationsWithCheckpointsFailed: '获取对话检查点信息失败',
             
             openDiffPreviewFailed: '打开 diff 预览失败',
+            diffContentNotFound: 'Diff 内容不存在或已过期',
+            loadDiffContentFailed: '加载 diff 内容失败',
             invalidDiffData: '无效的 diff 数据',
             noFileContent: '无文件内容',
             unsupportedToolType: '不支持的工具类型: {toolName}',
@@ -446,12 +459,23 @@ const zhCN: BackendLanguageMessages = {
             getInstallPathFailed: '获取安装路径失败',
             
             showNotificationFailed: '显示通知失败',
-            rejectToolCallsFailed: '标记工具拒绝状态失败'
+            rejectToolCallsFailed: '标记工具拒绝状态失败',
+            
+            getStorageConfigFailed: '获取存储配置失败',
+            updateStorageConfigFailed: '更新存储配置失败',
+            validateStoragePathFailed: '验证存储路径失败',
+            migrateStorageFailed: '迁移存储失败'
         },
         
         messages: {
             historyDiffPreview: '{filePath} (历史修改预览)',
-            newFileContentPreview: '{filePath} (新写入内容预览)'
+            newFileContentPreview: '{filePath} (新写入内容预览)',
+            fullFileDiffPreview: '{filePath} (完整文件差异预览)',
+            searchReplaceDiffPreview: '{filePath} (搜索替换差异预览)'
+        },
+        dialogs: {
+            selectStorageFolder: '选择存储文件夹',
+            selectFolder: '选择文件夹'
         }
     },
 

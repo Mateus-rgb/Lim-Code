@@ -1139,7 +1139,7 @@ const zhCN: LanguageMessages = {
                 appInfo: {
                     title: '应用信息',
                     name: 'Lim Code - Vibe Coding助手',
-                    version: '版本：1.0.6',
+                    version: '版本：1.0.7',
                     repository: '项目仓库',
                     developer: '开发者'
                 }
@@ -1272,6 +1272,41 @@ const zhCN: LanguageMessages = {
                 config: {
                     tooltip: '配置工具'
                 }
+            },
+            storageSettings: {
+                title: '存储路径',
+                description: '配置对话历史、存档点等数据的存储位置',
+                currentPath: '当前存储路径',
+                customPath: '自定义路径',
+                customPathPlaceholder: '输入自定义存储路径...',
+                customPathHint: '留空则使用默认路径（扩展存储目录）',
+                browse: '浏览',
+                apply: '应用',
+                reset: '重置为默认',
+                migrate: '迁移数据',
+                migrateHint: '将现有数据迁移到新路径',
+                migrating: '迁移中...',
+                validating: '验证中...',
+                validation: {
+                    valid: '路径有效',
+                    invalid: '路径无效',
+                    checking: '检查中...'
+                },
+                dialog: {
+                    migrateTitle: '确认迁移数据',
+                    migrateMessage: '是否将现有数据迁移到新路径？这将复制所有对话历史和存档点。',
+                    migrateWarning: '迁移过程中请勿关闭窗口',
+                    confirm: '确认迁移',
+                    cancel: '取消'
+                },
+                notifications: {
+                    pathUpdated: '存储路径已更新',
+                    pathReset: '存储路径已重置为默认',
+                    migrationSuccess: '数据迁移完成，请重新加载窗口以使更改生效',
+                    migrationFailed: '数据迁移失败: {error}',
+                    validationFailed: '路径验证失败: {error}'
+                },
+                reloadWindow: '重新加载窗口'
             }
         },
 
@@ -1500,6 +1535,9 @@ const zhCN: LanguageMessages = {
                     collapse: '收起',
                     expandRemaining: '展开剩余 {count} 行',
                     noContent: '无写入内容',
+                    viewContent: '内容',
+                    viewDiff: '差异',
+                    loadingDiff: '加载差异中...',
                     actions: {
                         created: '新建',
                         modified: '修改',
@@ -1724,16 +1762,26 @@ const zhCN: LanguageMessages = {
                 },
                 searchInFilesPanel: {
                     title: '搜索内容',
+                    replaceTitle: '搜索替换',
                     regex: '正则',
+                    dryRun: '预览',
                     matchCount: '{count} 个匹配',
                     fileCount: '{count} 个文件',
                     truncated: '已截断',
                     keywords: '关键词：',
+                    replaceWith: '替换为：',
+                    emptyString: '(空字符串)',
                     path: '路径：',
                     pattern: '模式：',
                     noResults: '没有找到匹配的内容',
                     collapse: '收起',
-                    expandRemaining: '展开剩余 {count} 个匹配'
+                    expandRemaining: '展开剩余 {count} 个匹配',
+                    replacements: '已替换 {count} 处',
+                    replacementsInFile: '{count} 处替换',
+                    filesModified: '{count} 个文件',
+                    viewMatches: '匹配项',
+                    viewDiff: '差异',
+                    loadingDiff: '加载差异中...'
                 }
             },
             terminal: {

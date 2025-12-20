@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { useSettingsStore, type SettingsTab } from '@/stores/settingsStore'
 import ChannelSettings from './ChannelSettings.vue'
 import ToolsSettings from './ToolsSettings.vue'
@@ -11,7 +11,7 @@ import GenerateImageSettings from './GenerateImageSettings.vue'
 import DependencySettings from './DependencySettings.vue'
 import ContextSettings from './ContextSettings.vue'
 import PromptSettings from './PromptSettings.vue'
-import { CustomScrollbar, CustomCheckbox, CustomSelect, type SelectOption } from '../common'
+import { CustomScrollbar, CustomCheckbox, CustomSelect, Modal, type SelectOption } from '../common'
 import { sendToExtension } from '@/utils/vscode'
 import { useI18n, SUPPORTED_LANGUAGES } from '@/i18n'
 
@@ -60,6 +60,21 @@ const isSaving = ref(false)
 // 保存状态消息
 const saveMessage = ref('')
 
+// 存储路径设置
+const storageSettings = reactive({
+  currentPath: '',
+  defaultPath: '',
+  customPath: '',
+  isCustom: false
+})
+const isValidatingPath = ref(false)
+const pathValidationResult = ref<{ valid: boolean; message?: string } | null>(null)
+const isMigrating = ref(false)
+const showMigrateDialog = ref(false)
+const storageMessage = ref('')
+const storageMessageType = ref<'success' | 'error'>('success')
+const needsReload = ref(false) // 迁移完成后需要重新加载
+
 // 加载设置
 async function loadSettings() {
   try {
@@ -73,8 +88,169 @@ async function loadSettings() {
       languageSetting.value = response.settings.ui.language
       setLanguage(response.settings.ui.language)
     }
+    
+    // 加载存储路径配置
+    await loadStorageConfig()
   } catch (error) {
     console.error('Failed to load settings:', error)
+  }
+}
+
+// 加载存储路径配置
+async function loadStorageConfig() {
+  try {
+    const response = await sendToExtension<any>('storagePath.getConfig', {})
+    if (response) {
+      storageSettings.currentPath = response.effectivePath || ''
+      storageSettings.defaultPath = response.defaultPath || ''
+      storageSettings.customPath = response.config?.customPath || ''
+      storageSettings.isCustom = !!response.config?.customPath
+    }
+  } catch (error) {
+    console.error('Failed to load storage config:', error)
+  }
+}
+
+// 验证路径
+async function validateStoragePath(path: string) {
+  if (!path.trim()) {
+    pathValidationResult.value = null
+    return
+  }
+  
+  isValidatingPath.value = true
+  pathValidationResult.value = null
+  
+  try {
+    const response = await sendToExtension<any>('storagePath.validate', { path: path.trim() })
+    pathValidationResult.value = {
+      valid: response?.valid ?? false,
+      message: response?.error
+    }
+  } catch (error: any) {
+    pathValidationResult.value = {
+      valid: false,
+      message: error?.message || 'Validation failed'
+    }
+  } finally {
+    isValidatingPath.value = false
+  }
+}
+
+// 防抖验证
+let validateDebounceTimer: ReturnType<typeof setTimeout> | null = null
+function debouncedValidatePath(path: string) {
+  if (validateDebounceTimer) {
+    clearTimeout(validateDebounceTimer)
+  }
+  validateDebounceTimer = setTimeout(() => {
+    validateStoragePath(path)
+  }, 500)
+}
+
+// 监听自定义路径变化
+watch(() => storageSettings.customPath, (newPath) => {
+  debouncedValidatePath(newPath)
+})
+
+// 应用存储路径（不迁移数据，只是更改配置）
+async function applyStoragePath() {
+  const newPath = storageSettings.customPath.trim()
+  
+  if (newPath && !pathValidationResult.value?.valid) {
+    return
+  }
+  
+  // 使用迁移接口来应用新路径（迁移到新路径）
+  if (newPath) {
+    confirmMigrate()
+  } else {
+    // 重置为默认路径
+    await resetStoragePath()
+  }
+}
+
+// 重置为默认路径
+async function resetStoragePath() {
+  isMigrating.value = true
+  needsReload.value = false
+  
+  try {
+    const response = await sendToExtension<any>('storagePath.reset', {})
+    
+    if (response?.success) {
+      storageSettings.customPath = ''
+      pathValidationResult.value = null
+      storageMessage.value = t('components.settings.storageSettings.notifications.migrationSuccess')
+      storageMessageType.value = 'success'
+      needsReload.value = true  // 重置也需要重新加载窗口才能生效
+      await loadStorageConfig()
+    } else {
+      storageMessage.value = response?.error || 'Failed to reset storage path'
+      storageMessageType.value = 'error'
+    }
+  } catch (error: any) {
+    storageMessage.value = error?.message || 'Failed to reset storage path'
+    storageMessageType.value = 'error'
+  } finally {
+    isMigrating.value = false
+  }
+  
+  // 只有非成功消息才自动消失
+  if (!needsReload.value) {
+    setTimeout(() => {
+      storageMessage.value = ''
+    }, 5000)
+  }
+}
+
+// 打开迁移确认对话框
+function confirmMigrate() {
+  showMigrateDialog.value = true
+}
+
+// 执行数据迁移
+async function executeMigration() {
+  showMigrateDialog.value = false
+  isMigrating.value = true
+  needsReload.value = false
+  
+  try {
+    const response = await sendToExtension<any>('storagePath.migrate', {
+      path: storageSettings.customPath.trim()
+    })
+    
+    if (response?.success) {
+      storageMessage.value = t('components.settings.storageSettings.notifications.migrationSuccess')
+      storageMessageType.value = 'success'
+      needsReload.value = true  // 迁移成功，需要重新加载
+      await loadStorageConfig()
+    } else {
+      const errorMsg = response?.error || 'Migration failed'
+      storageMessage.value = t('components.settings.storageSettings.notifications.migrationFailed').replace('{error}', errorMsg)
+      storageMessageType.value = 'error'
+    }
+  } catch (error: any) {
+    storageMessage.value = t('components.settings.storageSettings.notifications.migrationFailed').replace('{error}', error?.message || 'Unknown error')
+    storageMessageType.value = 'error'
+  } finally {
+    isMigrating.value = false
+  }
+  
+  // 只有非成功消息才自动消失
+  if (!needsReload.value) {
+    setTimeout(() => {
+      storageMessage.value = ''
+    }, 5000)
+  }
+}
+
+// 重新加载窗口
+async function reloadWindow() {
+  try {
+    await sendToExtension('reloadWindow', {})
+  } catch (error) {
+    console.error('Failed to reload window:', error)
   }
 }
 
@@ -311,6 +487,104 @@ onMounted(() => {
               
               <div class="divider"></div>
               
+              <!-- 存储路径设置 -->
+              <div class="form-group">
+                <label class="group-label">
+                  <i class="codicon codicon-folder"></i>
+                  {{ t('components.settings.storageSettings.title') }}
+                </label>
+                <p class="field-description">{{ t('components.settings.storageSettings.description') }}</p>
+                
+                <div class="storage-settings">
+                  <!-- 当前路径显示 -->
+                  <div class="storage-current-path">
+                    <label>{{ t('components.settings.storageSettings.currentPath') }}</label>
+                    <div class="path-display">
+                      <span class="path-text" :title="storageSettings.currentPath">{{ storageSettings.currentPath || '-' }}</span>
+                      <span v-if="storageSettings.isCustom" class="path-badge custom">{{ t('common.custom') }}</span>
+                      <span v-else class="path-badge default">{{ t('common.default') }}</span>
+                    </div>
+                  </div>
+                  
+                  <!-- 自定义路径输入 -->
+                  <div class="storage-custom-path">
+                    <label>{{ t('components.settings.storageSettings.customPath') }}</label>
+                    <div class="path-input-group">
+                      <input
+                        type="text"
+                        v-model="storageSettings.customPath"
+                        :placeholder="t('components.settings.storageSettings.customPathPlaceholder')"
+                        class="path-input"
+                        :class="{
+                          valid: pathValidationResult?.valid === true,
+                          invalid: pathValidationResult?.valid === false
+                        }"
+                      />
+                      <span v-if="isValidatingPath" class="validation-indicator">
+                        <i class="codicon codicon-loading codicon-modifier-spin"></i>
+                      </span>
+                      <span v-else-if="pathValidationResult?.valid === true" class="validation-indicator valid">
+                        <i class="codicon codicon-check"></i>
+                      </span>
+                      <span v-else-if="pathValidationResult?.valid === false" class="validation-indicator invalid">
+                        <i class="codicon codicon-error"></i>
+                      </span>
+                    </div>
+                    <p class="field-hint">{{ t('components.settings.storageSettings.customPathHint') }}</p>
+                    <p v-if="pathValidationResult?.valid === false && pathValidationResult?.message" class="error-hint">
+                      {{ pathValidationResult.message }}
+                    </p>
+                  </div>
+                  
+                  <!-- 操作按钮 -->
+                  <div class="storage-actions">
+                    <button
+                      class="action-btn primary"
+                      @click="applyStoragePath"
+                      :disabled="storageSettings.customPath.trim() !== '' && (!pathValidationResult?.valid || isValidatingPath)"
+                    >
+                      <i class="codicon codicon-check"></i>
+                      {{ t('components.settings.storageSettings.apply') }}
+                    </button>
+                    <button
+                      class="action-btn"
+                      @click="resetStoragePath"
+                      :disabled="!storageSettings.isCustom"
+                    >
+                      <i class="codicon codicon-discard"></i>
+                      {{ t('components.settings.storageSettings.reset') }}
+                    </button>
+                    <button
+                      class="action-btn"
+                      @click="confirmMigrate"
+                      :disabled="!storageSettings.customPath.trim() || !pathValidationResult?.valid || isMigrating"
+                      :title="t('components.settings.storageSettings.migrateHint')"
+                    >
+                      <i v-if="isMigrating" class="codicon codicon-loading codicon-modifier-spin"></i>
+                      <i v-else class="codicon codicon-sync"></i>
+                      {{ isMigrating ? t('components.settings.storageSettings.migrating') : t('components.settings.storageSettings.migrate') }}
+                    </button>
+                  </div>
+                  
+                  <!-- 状态消息 -->
+                  <div v-if="storageMessage" class="storage-message" :class="storageMessageType">
+                    <i :class="['codicon', storageMessageType === 'success' ? 'codicon-check' : 'codicon-error']"></i>
+                    {{ storageMessage }}
+                    <!-- 重新加载按钮 -->
+                    <button
+                      v-if="needsReload"
+                      class="reload-btn"
+                      @click="reloadWindow"
+                    >
+                      <i class="codicon codicon-refresh"></i>
+                      {{ t('components.settings.storageSettings.reloadWindow') }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              
+              <div class="divider"></div>
+              
               <!-- 应用信息 -->
               <div class="form-group">
                 <label class="group-label">
@@ -341,6 +615,28 @@ onMounted(() => {
         </div>
       </CustomScrollbar>
     </div>
+    
+    <!-- 迁移确认对话框 -->
+    <Modal
+      v-model="showMigrateDialog"
+      :title="t('components.settings.storageSettings.dialog.migrateTitle')"
+    >
+      <div class="migrate-dialog-content">
+        <p>{{ t('components.settings.storageSettings.dialog.migrateMessage') }}</p>
+        <p class="migrate-warning">
+          <i class="codicon codicon-warning"></i>
+          {{ t('components.settings.storageSettings.dialog.migrateWarning') }}
+        </p>
+      </div>
+      <template #footer>
+        <button class="dialog-btn" @click="showMigrateDialog = false">
+          {{ t('components.settings.storageSettings.dialog.cancel') }}
+        </button>
+        <button class="dialog-btn primary" @click="executeMigration">
+          {{ t('components.settings.storageSettings.dialog.confirm') }}
+        </button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -689,5 +985,261 @@ onMounted(() => {
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/* 存储路径设置样式 */
+.storage-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+}
+
+.storage-current-path {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.storage-current-path label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+}
+
+.path-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 4px;
+}
+
+.path-text {
+  flex: 1;
+  font-size: 12px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path-badge {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.path-badge.default {
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.path-badge.custom {
+  background: var(--vscode-statusBarItem-prominentBackground);
+  color: var(--vscode-statusBarItem-prominentForeground);
+}
+
+.storage-custom-path {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.storage-custom-path label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+}
+
+.path-input-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.path-input {
+  flex: 1;
+  padding: 8px 32px 8px 12px;
+  font-size: 13px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 4px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.path-input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.path-input.valid {
+  border-color: var(--vscode-terminal-ansiGreen);
+}
+
+.path-input.invalid {
+  border-color: var(--vscode-inputValidation-errorBorder);
+}
+
+.validation-indicator {
+  position: absolute;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-descriptionForeground);
+}
+
+.validation-indicator.valid {
+  color: var(--vscode-terminal-ansiGreen);
+}
+
+.validation-indicator.invalid {
+  color: var(--vscode-errorForeground);
+}
+
+.field-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.storage-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.action-btn:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.action-btn.primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.action-btn.primary:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.storage-message {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.storage-message.success {
+  background: rgba(0, 200, 0, 0.1);
+  color: var(--vscode-terminal-ansiGreen);
+}
+
+.storage-message.error {
+  background: rgba(200, 0, 0, 0.1);
+  color: var(--vscode-errorForeground);
+}
+
+.reload-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.reload-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+/* 迁移对话框 */
+.migrate-dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.migrate-dialog-content p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.migrate-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 200, 0, 0.1);
+  border-radius: 4px;
+  color: var(--vscode-editorWarning-foreground);
+}
+
+.migrate-warning .codicon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.dialog-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.dialog-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.dialog-btn.primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.dialog-btn.primary:hover {
+  background: var(--vscode-button-hoverBackground);
 }
 </style>

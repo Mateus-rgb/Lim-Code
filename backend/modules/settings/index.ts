@@ -7,6 +7,7 @@
 export { SettingsManager } from './SettingsManager';
 export type { SettingsStorage } from './SettingsManager';
 export { FileSettingsStorage, MemorySettingsStorage } from './storage';
+export { StoragePathManager } from './StoragePathManager';
 export type {
     GlobalSettings,
     ToolsEnabledState,
@@ -17,7 +18,9 @@ export type {
     ListFilesToolConfig,
     ApplyDiffToolConfig,
     ExecuteCommandToolConfig,
-    ShellConfig
+    ShellConfig,
+    StoragePathConfig,
+    StorageStats
 } from './types';
 export {
     DEFAULT_GLOBAL_SETTINGS,

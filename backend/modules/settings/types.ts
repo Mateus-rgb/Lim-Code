@@ -722,11 +722,78 @@ export interface ProxySettings {
 }
 
 /**
+ * 数据存储路径配置
+ *
+ * 允许用户自定义大文件的存储位置，避免占用 C 盘空间
+ * 核心设置仍保存在 globalStorageUri，只有大文件使用自定义路径
+ */
+export interface StoragePathConfig {
+    /**
+     * 自定义数据存储根目录
+     *
+     * 如果为空或未设置，使用默认的 globalStorageUri
+     * 例如: "D:\\LimCodeData" 或 "/home/user/limcode-data"
+     */
+    customDataPath?: string;
+    
+    /**
+     * 最后一次成功迁移的时间戳
+     */
+    lastMigrationAt?: number;
+    
+    /**
+     * 迁移状态
+     */
+    migrationStatus?: 'none' | 'pending' | 'in_progress' | 'completed' | 'failed';
+    
+    /**
+     * 迁移失败的错误信息
+     */
+    migrationError?: string;
+}
+
+/**
+ * 存储目录统计信息
+ */
+export interface StorageStats {
+    /**
+     * 目录路径
+     */
+    path: string;
+    
+    /**
+     * 总大小（字节）
+     */
+    totalSize: number;
+    
+    /**
+     * 文件数量
+     */
+    fileCount: number;
+    
+    /**
+     * 子目录统计
+     */
+    subDirs: {
+        conversations: { size: number; count: number };
+        checkpoints: { size: number; count: number };
+        mcp: { size: number; count: number };
+        dependencies: { size: number; count: number };
+        diffs: { size: number; count: number };
+    };
+}
+
+/**
  * 全局设置
  *
  * 包含所有全局级别的配置项
  */
 export interface GlobalSettings {
+    /**
+     * 数据存储路径配置
+     */
+    storagePath?: StoragePathConfig;
+    
     /**
      * 当前激活的渠道配置 ID
      *

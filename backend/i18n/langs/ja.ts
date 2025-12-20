@@ -100,6 +100,17 @@ const ja: BackendLanguageMessages = {
                 loadFailed: '設定の読み込みに失敗しました',
                 saveFailed: '設定の保存に失敗しました',
                 invalidValue: '無効な設定値'
+            },
+            storage: {
+                pathNotAbsolute: 'パスは絶対パスである必要があります: {path}',
+                pathNotDirectory: 'パスはディレクトリである必要があります: {path}',
+                createDirectoryFailed: 'ディレクトリの作成に失敗しました: {error}',
+                migrationFailed: '移行に失敗しました: {error}',
+                migrationSuccess: 'ストレージの移行が完了しました',
+                migratingFiles: 'ファイルを移行中...',
+                migratingConversations: '会話を移行中...',
+                migratingCheckpoints: 'チェックポイントを移行中...',
+                migratingConfigs: '設定を移行中...'
             }
         },
 
@@ -398,6 +409,8 @@ const ja: BackendLanguageMessages = {
             getConversationsWithCheckpointsFailed: 'チェックポイント付き会話の取得に失敗しました',
             
             openDiffPreviewFailed: 'diff プレビューを開くのに失敗しました',
+            diffContentNotFound: 'Diff 内容が見つからないか、期限切れです',
+            loadDiffContentFailed: 'Diff 内容の読み込みに失敗しました',
             invalidDiffData: '無効な diff データ',
             noFileContent: 'ファイルコンテンツがありません',
             unsupportedToolType: 'サポートされていないツールタイプ: {toolName}',
@@ -446,12 +459,23 @@ const ja: BackendLanguageMessages = {
             getInstallPathFailed: 'インストールパスの取得に失敗しました',
             
             showNotificationFailed: '通知の表示に失敗しました',
-            rejectToolCallsFailed: 'ツール呼び出しの拒否に失敗しました'
+            rejectToolCallsFailed: 'ツール呼び出しの拒否に失敗しました',
+            
+            getStorageConfigFailed: 'ストレージ設定の取得に失敗しました',
+            updateStorageConfigFailed: 'ストレージ設定の更新に失敗しました',
+            validateStoragePathFailed: 'ストレージパスの検証に失敗しました',
+            migrateStorageFailed: 'ストレージの移行に失敗しました'
         },
         
         messages: {
             historyDiffPreview: '{filePath} (履歴差分プレビュー)',
-            newFileContentPreview: '{filePath} (新規コンテンツプレビュー)'
+            newFileContentPreview: '{filePath} (新規コンテンツプレビュー)',
+            fullFileDiffPreview: '{filePath} (完全ファイル差分プレビュー)',
+            searchReplaceDiffPreview: '{filePath} (検索置換差分プレビュー)'
+        },
+        dialogs: {
+            selectStorageFolder: 'ストレージフォルダを選択',
+            selectFolder: 'フォルダを選択'
         }
     },
 

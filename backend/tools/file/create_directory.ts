@@ -103,14 +103,26 @@ export function createCreateDirectoryTool(): Tool {
                 }
             }
 
+            // 简化返回结构：类似 delete_file 的风格
             const allSuccess = failCount === 0;
+            const createdPaths = results.filter(r => r.success).map(r => r.path);
+            const failedPaths = results.filter(r => !r.success).map(r => `${r.path}: ${r.error}`);
+            
+            let message: string;
+            if (allSuccess) {
+                message = `Created: ${createdPaths.join(', ')}`;
+            } else if (successCount > 0) {
+                message = `Created: ${createdPaths.join(', ')}\nFailed: ${failedPaths.join(', ')}`;
+            } else {
+                message = `Create failed: ${failedPaths.join(', ')}`;
+            }
+
             return {
                 success: allSuccess,
                 data: {
-                    results,
-                    successCount,
-                    failCount,
-                    totalCount: pathList.length
+                    message,
+                    createdPaths,
+                    failedPaths: results.filter(r => !r.success).map(r => r.path)
                 },
                 error: allSuccess ? undefined : `${failCount} directories failed to create`
             };

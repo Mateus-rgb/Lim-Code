@@ -34,7 +34,7 @@ export interface ToolConfig {
   hasDiffPreview?: boolean
   
   /** 获取 diff 预览所需的文件路径 */
-  getDiffFilePath?: (args: Record<string, unknown>) => string | string[]
+  getDiffFilePath?: (args: Record<string, unknown>, result?: Record<string, unknown>) => string | string[]
   
   /** 是否隐藏此工具（不在消息列表中显示） */
   hidden?: boolean

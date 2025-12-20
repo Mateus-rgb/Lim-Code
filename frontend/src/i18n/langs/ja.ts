@@ -1139,7 +1139,7 @@ const ja: LanguageMessages = {
                 appInfo: {
                     title: 'アプリケーション情報',
                     name: 'Lim Code - Vibe Coding アシスタント',
-                    version: 'バージョン：1.0.6',
+                    version: 'バージョン：1.0.7',
                     repository: 'リポジトリ',
                     developer: '開発者'
                 }
@@ -1272,6 +1272,41 @@ const ja: LanguageMessages = {
                 config: {
                     tooltip: 'ツールを設定'
                 }
+            },
+            storageSettings: {
+                title: 'ストレージパス',
+                description: '会話履歴、チェックポイントなどのデータの保存場所を設定',
+                currentPath: '現在のストレージパス',
+                customPath: 'カスタムパス',
+                customPathPlaceholder: 'カスタムストレージパスを入力...',
+                customPathHint: '空白の場合はデフォルトパス（拡張機能ストレージディレクトリ）を使用',
+                browse: '参照',
+                apply: '適用',
+                reset: 'デフォルトにリセット',
+                migrate: 'データを移行',
+                migrateHint: '既存のデータを新しいパスに移行',
+                migrating: '移行中...',
+                validating: '検証中...',
+                validation: {
+                    valid: 'パスは有効です',
+                    invalid: 'パスは無効です',
+                    checking: '確認中...'
+                },
+                dialog: {
+                    migrateTitle: 'データ移行の確認',
+                    migrateMessage: '既存のデータを新しいパスに移行しますか？すべての会話履歴とチェックポイントがコピーされます。',
+                    migrateWarning: '移行中はウィンドウを閉じないでください',
+                    confirm: '移行を確認',
+                    cancel: 'キャンセル'
+                },
+                notifications: {
+                    pathUpdated: 'ストレージパスが更新されました',
+                    pathReset: 'ストレージパスがデフォルトにリセットされました',
+                    migrationSuccess: 'データ移行が完了しました。変更を有効にするにはウィンドウを再読み込みしてください',
+                    migrationFailed: 'データ移行に失敗しました: {error}',
+                    validationFailed: 'パスの検証に失敗しました: {error}'
+                },
+                reloadWindow: 'ウィンドウを再読み込み'
             }
         },
 
@@ -1500,6 +1535,9 @@ const ja: LanguageMessages = {
                     collapse: '折りたたむ',
                     expandRemaining: '残り {count} 行を展開',
                     noContent: '書き込む内容がありません',
+                    viewContent: '内容',
+                    viewDiff: '差分',
+                    loadingDiff: '差分を読み込み中...',
                     actions: {
                         created: '新規作成',
                         modified: '変更',
@@ -1525,16 +1563,26 @@ const ja: LanguageMessages = {
                 },
                 searchInFilesPanel: {
                     title: 'コンテンツを検索',
+                    replaceTitle: '検索と置換',
                     regex: '正規表現',
+                    dryRun: 'プレビュー',
                     matchCount: '{count} 一致',
                     fileCount: '{count} ファイル',
                     truncated: '切り捨て',
                     keywords: 'キーワード：',
+                    replaceWith: '置換後：',
+                    emptyString: '(空文字列)',
                     path: 'パス：',
                     pattern: 'パターン：',
                     noResults: '一致するコンテンツが見つかりません',
                     collapse: '折りたたむ',
-                    expandRemaining: '残り {count} 一致を展開'
+                    expandRemaining: '残り {count} 一致を展開',
+                    replacements: '{count} 箇所を置換しました',
+                    replacementsInFile: '{count} 箇所を置換',
+                    filesModified: '{count} ファイル',
+                    viewMatches: '一致項目',
+                    viewDiff: '差分',
+                    loadingDiff: '差分を読み込み中...'
                 }
             },
             terminal: {

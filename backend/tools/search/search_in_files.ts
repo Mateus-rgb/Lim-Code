@@ -1,13 +1,15 @@
 /**
- * 在文件中搜索内容工具
+ * 在文件中搜索（和替换）内容工具
  *
  * 支持多工作区（Multi-root Workspaces）
+ * 支持正则表达式搜索和替换
  */
 
 import * as vscode from 'vscode';
 import type { Tool, ToolResult } from '../types';
 import { getWorkspaceRoot, getAllWorkspaces, parseWorkspacePath, toRelativePath } from '../utils';
 import { getGlobalSettingsManager } from '../../core/settingsContext';
+import { getDiffStorageManager } from '../../modules/conversation';
 
 /**
  * 默认排除模式
@@ -43,7 +45,29 @@ function escapeRegex(str: string): string {
 }
 
 /**
- * 在单个目录中搜索
+ * 搜索匹配项
+ */
+interface SearchMatch {
+    file: string;
+    workspace?: string;
+    line: number;
+    column: number;
+    match: string;
+    context: string;
+}
+
+/**
+ * 替换结果
+ */
+interface ReplaceResult {
+    file: string;
+    workspace?: string;
+    replacements: number;
+    diffContentId?: string;
+}
+
+/**
+ * 在单个目录中搜索（仅搜索，不替换）
  */
 async function searchInDirectory(
     searchRoot: vscode.Uri,
@@ -52,22 +76,8 @@ async function searchInDirectory(
     maxResults: number,
     workspaceName: string | null,
     excludePattern: string
-): Promise<Array<{
-    file: string;
-    workspace?: string;
-    line: number;
-    column: number;
-    match: string;
-    context: string;
-}>> {
-    const results: Array<{
-        file: string;
-        workspace?: string;
-        line: number;
-        column: number;
-        match: string;
-        context: string;
-    }> = [];
+): Promise<SearchMatch[]> {
+    const results: SearchMatch[] = [];
     
     const pattern = new vscode.RelativePattern(searchRoot, filePattern);
     const files = await vscode.workspace.findFiles(pattern, excludePattern, 1000);
@@ -128,6 +138,128 @@ async function searchInDirectory(
 }
 
 /**
+ * 在单个目录中搜索并替换
+ */
+async function searchAndReplaceInDirectory(
+    searchRoot: vscode.Uri,
+    filePattern: string,
+    searchRegex: RegExp,
+    replacement: string,
+    maxFiles: number,
+    workspaceName: string | null,
+    excludePattern: string,
+    dryRun: boolean
+): Promise<{
+    matches: SearchMatch[];
+    replacements: ReplaceResult[];
+    totalReplacements: number;
+}> {
+    const matches: SearchMatch[] = [];
+    const replacements: ReplaceResult[] = [];
+    let totalReplacements = 0;
+    
+    const pattern = new vscode.RelativePattern(searchRoot, filePattern);
+    const files = await vscode.workspace.findFiles(pattern, excludePattern, 1000);
+    
+    let processedFiles = 0;
+    
+    for (const fileUri of files) {
+        if (processedFiles >= maxFiles) {
+            break;
+        }
+        
+        try {
+            const content = await vscode.workspace.fs.readFile(fileUri);
+            const originalText = new TextDecoder().decode(content);
+            const lines = originalText.split('\n');
+            
+            // 检查是否有匹配
+            searchRegex.lastIndex = 0;
+            if (!searchRegex.test(originalText)) {
+                continue;
+            }
+            
+            processedFiles++;
+            
+            // 使用支持多工作区的相对路径
+            const relativePath = toRelativePath(fileUri, workspaceName !== null);
+            
+            // 收集该文件的匹配信息
+            let fileReplacementCount = 0;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                let match;
+                searchRegex.lastIndex = 0;
+                
+                while ((match = searchRegex.exec(line)) !== null) {
+                    // 获取上下文（前后各1行）
+                    const contextLines = [];
+                    if (i > 0) {
+                        contextLines.push(`${i}: ${lines[i - 1]}`);
+                    }
+                    contextLines.push(`${i + 1}: ${line}`);
+                    if (i < lines.length - 1) {
+                        contextLines.push(`${i + 2}: ${lines[i + 1]}`);
+                    }
+                    
+                    matches.push({
+                        file: relativePath,
+                        workspace: workspaceName || undefined,
+                        line: i + 1,
+                        column: match.index + 1,
+                        match: match[0],
+                        context: contextLines.join('\n')
+                    });
+                    
+                    fileReplacementCount++;
+                }
+            }
+            
+            // 执行替换
+            searchRegex.lastIndex = 0;
+            const newText = originalText.replace(searchRegex, replacement);
+            
+            if (newText !== originalText) {
+                totalReplacements += fileReplacementCount;
+                
+                let diffContentId: string | undefined;
+                
+                if (!dryRun) {
+                    // 保存文件
+                    await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(newText));
+                    
+                    // 保存 diff 内容用于查看差异
+                    const diffStorageManager = getDiffStorageManager();
+                    if (diffStorageManager) {
+                        try {
+                            const diffRef = await diffStorageManager.saveGlobalDiff({
+                                originalContent: originalText,
+                                newContent: newText,
+                                filePath: relativePath
+                            });
+                            diffContentId = diffRef.diffId;
+                        } catch (e) {
+                            console.warn('Failed to save diff content:', e);
+                        }
+                    }
+                }
+                
+                replacements.push({
+                    file: relativePath,
+                    workspace: workspaceName || undefined,
+                    replacements: fileReplacementCount,
+                    diffContentId
+                });
+            }
+        } catch {
+            // 跳过无法读取/写入的文件
+        }
+    }
+    
+    return { matches, replacements, totalReplacements };
+}
+
+/**
  * 创建搜索文件内容工具
  */
 export function createSearchInFilesTool(): Tool {
@@ -144,8 +276,8 @@ export function createSearchInFilesTool(): Tool {
         declaration: {
             name: 'search_in_files',
             description: isMultiRoot
-                ? `Search for content in multiple workspace files, supports regular expressions. Use "workspace_name/path" format to specify a workspace, or "." to search all. Available workspaces: ${workspaces.map(w => w.name).join(', ')}`
-                : 'Search for content in workspace files, supports regular expressions. Returns matching files and context.',
+                ? `Search (and optionally replace) content in multiple workspace files. Supports regular expressions. Use "workspace_name/path" format to specify a workspace, or "." to search all. Available workspaces: ${workspaces.map(w => w.name).join(', ')}`
+                : 'Search (and optionally replace) content in workspace files. Supports regular expressions. Returns matching files and context. If "replace" is provided, performs replacement and saves changes.',
             category: 'search',
             parameters: {
                 type: 'object',
@@ -166,13 +298,27 @@ export function createSearchInFilesTool(): Tool {
                     },
                     isRegex: {
                         type: 'boolean',
-                        description: 'Whether to use regular expressions',
+                        description: 'Whether to treat query as a regular expression',
+                        default: false
+                    },
+                    replace: {
+                        type: 'string',
+                        description: 'Replacement string. If provided, matching content will be replaced. Supports regex capture groups like $1, $2 when isRegex is true.'
+                    },
+                    dryRun: {
+                        type: 'boolean',
+                        description: 'If true, only preview replacements without actually modifying files',
                         default: false
                     },
                     maxResults: {
                         type: 'number',
-                        description: 'Maximum number of results',
+                        description: 'Maximum number of match results (for search only mode)',
                         default: 100
+                    },
+                    maxFiles: {
+                        type: 'number',
+                        description: 'Maximum number of files to process (for replace mode)',
+                        default: 50
                     }
                 },
                 required: ['query']
@@ -183,7 +329,10 @@ export function createSearchInFilesTool(): Tool {
             const searchPath = (args.path as string) || '.';
             const filePattern = (args.pattern as string) || '**/*';
             const isRegex = (args.isRegex as boolean) || false;
+            const replacement = args.replace as string | undefined;
+            const dryRun = (args.dryRun as boolean) || false;
             const maxResults = (args.maxResults as number) || 100;
+            const maxFiles = (args.maxFiles as number) || 50;
 
             if (!query) {
                 return { success: false, error: 'query is required' };
@@ -194,19 +343,16 @@ export function createSearchInFilesTool(): Tool {
                 return { success: false, error: 'No workspace folder open' };
             }
 
+            const isReplaceMode = replacement !== undefined;
+
             try {
+                // 创建搜索正则表达式
+                // 对于搜索模式，使用 'gim' 标志（全局、不区分大小写、多行）
+                // 对于替换模式，使用 'g' 标志（全局匹配）确保替换所有匹配项
+                const flags = isReplaceMode ? 'g' : 'gim';
                 const searchRegex = isRegex
-                    ? new RegExp(query, 'gim')
-                    : new RegExp(escapeRegex(query), 'gim');
-                
-                let allResults: Array<{
-                    file: string;
-                    workspace?: string;
-                    line: number;
-                    column: number;
-                    match: string;
-                    context: string;
-                }> = [];
+                    ? new RegExp(query, flags)
+                    : new RegExp(escapeRegex(query), flags);
                 
                 // 获取排除模式
                 const excludePattern = getExcludePattern();
@@ -214,57 +360,139 @@ export function createSearchInFilesTool(): Tool {
                 // 解析路径，确定搜索范围
                 const { workspace: targetWorkspace, relativePath, isExplicit } = parseWorkspacePath(searchPath);
                 
-                if (isExplicit && targetWorkspace) {
-                    // 显式指定了工作区，只搜索该工作区
-                    const searchRoot = vscode.Uri.joinPath(targetWorkspace.uri, relativePath);
-                    allResults = await searchInDirectory(
-                        searchRoot,
-                        filePattern,
-                        searchRegex,
-                        maxResults,
-                        workspaces.length > 1 ? targetWorkspace.name : null,
-                        excludePattern
-                    );
-                } else if (searchPath === '.' && workspaces.length > 1) {
-                    // 搜索所有工作区
-                    for (const ws of workspaces) {
-                        if (allResults.length >= maxResults) break;
-                        
-                        const remaining = maxResults - allResults.length;
-                        const wsResults = await searchInDirectory(
-                            ws.uri,
+                if (isReplaceMode) {
+                    // 替换模式
+                    let allMatches: SearchMatch[] = [];
+                    let allReplacements: ReplaceResult[] = [];
+                    let totalReplacements = 0;
+                    
+                    if (isExplicit && targetWorkspace) {
+                        // 显式指定了工作区，只搜索该工作区
+                        const searchRoot = vscode.Uri.joinPath(targetWorkspace.uri, relativePath);
+                        const result = await searchAndReplaceInDirectory(
+                            searchRoot,
                             filePattern,
                             searchRegex,
-                            remaining,
-                            ws.name,
+                            replacement,
+                            maxFiles,
+                            workspaces.length > 1 ? targetWorkspace.name : null,
+                            excludePattern,
+                            dryRun
+                        );
+                        allMatches = result.matches;
+                        allReplacements = result.replacements;
+                        totalReplacements = result.totalReplacements;
+                    } else if (searchPath === '.' && workspaces.length > 1) {
+                        // 搜索所有工作区
+                        let remainingFiles = maxFiles;
+                        for (const ws of workspaces) {
+                            if (remainingFiles <= 0) break;
+                            
+                            const result = await searchAndReplaceInDirectory(
+                                ws.uri,
+                                filePattern,
+                                searchRegex,
+                                replacement,
+                                remainingFiles,
+                                ws.name,
+                                excludePattern,
+                                dryRun
+                            );
+                            allMatches.push(...result.matches);
+                            allReplacements.push(...result.replacements);
+                            totalReplacements += result.totalReplacements;
+                            remainingFiles -= result.replacements.length;
+                        }
+                    } else {
+                        // 单工作区或未指定，使用默认
+                        const root = targetWorkspace?.uri || workspaces[0].uri;
+                        const searchRoot = vscode.Uri.joinPath(root, relativePath);
+                        const result = await searchAndReplaceInDirectory(
+                            searchRoot,
+                            filePattern,
+                            searchRegex,
+                            replacement,
+                            maxFiles,
+                            workspaces.length > 1 ? (targetWorkspace?.name || workspaces[0].name) : null,
+                            excludePattern,
+                            dryRun
+                        );
+                        allMatches = result.matches;
+                        allReplacements = result.replacements;
+                        totalReplacements = result.totalReplacements;
+                    }
+                    
+                    return {
+                        success: true,
+                        data: {
+                            query,
+                            replacement,
+                            isReplaceMode: true,
+                            dryRun,
+                            matches: allMatches,
+                            results: allReplacements,
+                            filesModified: allReplacements.length,
+                            totalReplacements,
+                            multiRoot: workspaces.length > 1
+                        }
+                    };
+                } else {
+                    // 仅搜索模式
+                    let allResults: SearchMatch[] = [];
+                    
+                    if (isExplicit && targetWorkspace) {
+                        // 显式指定了工作区，只搜索该工作区
+                        const searchRoot = vscode.Uri.joinPath(targetWorkspace.uri, relativePath);
+                        allResults = await searchInDirectory(
+                            searchRoot,
+                            filePattern,
+                            searchRegex,
+                            maxResults,
+                            workspaces.length > 1 ? targetWorkspace.name : null,
                             excludePattern
                         );
-                        allResults.push(...wsResults);
+                    } else if (searchPath === '.' && workspaces.length > 1) {
+                        // 搜索所有工作区
+                        for (const ws of workspaces) {
+                            if (allResults.length >= maxResults) break;
+                            
+                            const remaining = maxResults - allResults.length;
+                            const wsResults = await searchInDirectory(
+                                ws.uri,
+                                filePattern,
+                                searchRegex,
+                                remaining,
+                                ws.name,
+                                excludePattern
+                            );
+                            allResults.push(...wsResults);
+                        }
+                    } else {
+                        // 单工作区或未指定，使用默认
+                        const root = targetWorkspace?.uri || workspaces[0].uri;
+                        const searchRoot = vscode.Uri.joinPath(root, relativePath);
+                        allResults = await searchInDirectory(
+                            searchRoot,
+                            filePattern,
+                            searchRegex,
+                            maxResults,
+                            workspaces.length > 1 ? (targetWorkspace?.name || workspaces[0].name) : null,
+                            excludePattern
+                        );
                     }
-                } else {
-                    // 单工作区或未指定，使用默认
-                    const root = targetWorkspace?.uri || workspaces[0].uri;
-                    const searchRoot = vscode.Uri.joinPath(root, relativePath);
-                    allResults = await searchInDirectory(
-                        searchRoot,
-                        filePattern,
-                        searchRegex,
-                        maxResults,
-                        workspaces.length > 1 ? (targetWorkspace?.name || workspaces[0].name) : null,
-                        excludePattern
-                    );
-                }
 
-                return {
-                    success: true,
-                    data: {
-                        query,
-                        results: allResults,
-                        count: allResults.length,
-                        truncated: allResults.length >= maxResults,
-                        multiRoot: workspaces.length > 1
-                    }
-                };
+                    return {
+                        success: true,
+                        data: {
+                            query,
+                            isReplaceMode: false,
+                            results: allResults,
+                            count: allResults.length,
+                            truncated: allResults.length >= maxResults,
+                            multiRoot: workspaces.length > 1
+                        }
+                    };
+                }
             } catch (error) {
                 return {
                     success: false,

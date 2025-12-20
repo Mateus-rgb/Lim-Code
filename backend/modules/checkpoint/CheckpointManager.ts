@@ -17,6 +17,18 @@ import type { ConversationManager } from '../conversation/ConversationManager';
 import { getDiffManager } from '../../tools/file/diffManager';
 
 /**
+ * 文件变更记录
+ */
+export interface FileChange {
+    /** 相对路径 */
+    path: string;
+    /** 变更类型 */
+    type: 'added' | 'modified' | 'deleted';
+    /** 文件哈希（仅 added/modified） */
+    hash?: string;
+}
+
+/**
  * 检查点记录
  */
 export interface CheckpointRecord {
@@ -40,6 +52,14 @@ export interface CheckpointRecord {
     contentHash: string;
     /** 可选描述 */
     description?: string;
+    /** 备份类型：full=完整备份，incremental=增量备份 */
+    type?: 'full' | 'incremental';
+    /** 增量备份基于的检查点 ID（仅增量备份有效） */
+    baseCheckpointId?: string;
+    /** 变更的文件列表（仅增量备份有效） */
+    changes?: FileChange[];
+    /** 所有文件的哈希映射（用于增量比较） */
+    fileHashes?: Record<string, string>;
 }
 
 /**
@@ -51,10 +71,13 @@ export class CheckpointManager {
     constructor(
         private settingsManager: SettingsManager,
         private conversationManager: ConversationManager,
-        private context: vscode.ExtensionContext
+        private context: vscode.ExtensionContext,
+        customDataPath?: string
     ) {
-        // 在扩展存储目录下创建 checkpoints 目录
-        this.checkpointsDir = path.join(context.globalStorageUri.fsPath, 'checkpoints');
+        // 如果提供了自定义路径，使用自定义路径下的 checkpoints 目录
+        // 否则使用扩展存储目录
+        const basePath = customDataPath || context.globalStorageUri.fsPath;
+        this.checkpointsDir = path.join(basePath, 'checkpoints');
     }
     
     /**
@@ -146,53 +169,117 @@ export class CheckpointManager {
             // 收集需要备份的文件和目录
             const { files, dirs } = await this.collectFilesAndDirs(workspaceRoot.fsPath);
             
-            // 计算内容签名并复制文件
+            // 计算当前所有文件的哈希
+            const currentHashes: Record<string, string> = {};
             const hashParts: string[] = [];
-            let fileCount = 0;
-            
-            // 排序文件列表以确保一致性
             const sortedFiles = [...files].sort();
             
             for (const file of sortedFiles) {
                 try {
                     const relativePath = path.relative(workspaceRoot.fsPath, file);
-                    const destPath = path.join(backupDir, relativePath);
-                    
-                    // 读取文件内容计算哈希
                     const content = await fs.readFile(file);
                     const fileHash = crypto.createHash('md5').update(content).digest('hex');
+                    currentHashes[relativePath] = fileHash;
                     hashParts.push(`${relativePath}:${fileHash}`);
-                    
-                    // 确保目标目录存在
-                    await fs.mkdir(path.dirname(destPath), { recursive: true });
-                    
-                    // 复制文件
-                    await fs.copyFile(file, destPath);
-                    fileCount++;
                 } catch (err) {
-                    // 忽略单个文件复制错误
-                    console.warn(`[CheckpointManager] Failed to copy ${file}:`, err);
+                    console.warn(`[CheckpointManager] Failed to hash ${file}:`, err);
                 }
             }
             
-            // 备份空目录
+            // 将空目录也加入哈希
             for (const dir of dirs) {
-                try {
-                    const relativePath = path.relative(workspaceRoot.fsPath, dir);
-                    const destPath = path.join(backupDir, relativePath);
-                    await fs.mkdir(destPath, { recursive: true });
-                    // 将空目录也加入哈希
-                    hashParts.push(`${relativePath}:empty-dir`);
-                } catch (err) {
-                    console.warn(`[CheckpointManager] Failed to create empty dir ${dir}:`, err);
-                }
+                const relativePath = path.relative(workspaceRoot.fsPath, dir);
+                hashParts.push(`${relativePath}:empty-dir`);
             }
             
             // 计算综合内容签名
             const contentHash = crypto.createHash('sha256')
                 .update(hashParts.join('\n'))
                 .digest('hex')
-                .substring(0, 16);  // 取前16位即可
+                .substring(0, 16);
+            
+            // 获取该对话的上一个检查点，用于增量备份
+            const existingCheckpoints = await this.getCheckpoints(conversationId);
+            const lastCheckpoint = existingCheckpoints.length > 0
+                ? existingCheckpoints[existingCheckpoints.length - 1]
+                : null;
+            
+            // 判断是否可以进行增量备份
+            let isIncremental = false;
+            let baseCheckpointId: string | undefined;
+            let changes: FileChange[] = [];
+            let fileCount = 0;
+            
+            if (lastCheckpoint && lastCheckpoint.fileHashes) {
+                // 计算变更
+                const { added, modified, deleted } = this.computeChanges(
+                    lastCheckpoint.fileHashes,
+                    currentHashes
+                );
+                
+                // 如果变更的文件数量小于总文件数的一半，使用增量备份
+                const totalChanges = added.length + modified.length + deleted.length;
+                const totalFiles = Object.keys(currentHashes).length;
+                
+                if (totalChanges < totalFiles * 0.5 && totalChanges > 0) {
+                    isIncremental = true;
+                    baseCheckpointId = lastCheckpoint.id;
+                    
+                    // 构建变更列表
+                    changes = [
+                        ...added.map(p => ({ path: p, type: 'added' as const, hash: currentHashes[p] })),
+                        ...modified.map(p => ({ path: p, type: 'modified' as const, hash: currentHashes[p] })),
+                        ...deleted.map(p => ({ path: p, type: 'deleted' as const }))
+                    ];
+                    
+                    // 只复制变更的文件
+                    for (const change of changes) {
+                        if (change.type === 'deleted') continue;
+                        
+                        const srcPath = path.join(workspaceRoot.fsPath, change.path);
+                        const destPath = path.join(backupDir, change.path);
+                        
+                        try {
+                            await fs.mkdir(path.dirname(destPath), { recursive: true });
+                            await fs.copyFile(srcPath, destPath);
+                            fileCount++;
+                        } catch (err) {
+                            console.warn(`[CheckpointManager] Failed to copy ${change.path}:`, err);
+                        }
+                    }
+                    
+                    console.log(`[CheckpointManager] Incremental backup: ${added.length} added, ${modified.length} modified, ${deleted.length} deleted`);
+                }
+            }
+            
+            // 如果不是增量备份，进行完整备份
+            if (!isIncremental) {
+                for (const file of sortedFiles) {
+                    try {
+                        const relativePath = path.relative(workspaceRoot.fsPath, file);
+                        const destPath = path.join(backupDir, relativePath);
+                        
+                        await fs.mkdir(path.dirname(destPath), { recursive: true });
+                        await fs.copyFile(file, destPath);
+                        fileCount++;
+                    } catch (err) {
+                        console.warn(`[CheckpointManager] Failed to copy ${file}:`, err);
+                    }
+                }
+                
+                // 备份空目录
+                for (const dir of dirs) {
+                    try {
+                        const relativePath = path.relative(workspaceRoot.fsPath, dir);
+                        const destPath = path.join(backupDir, relativePath);
+                        await fs.mkdir(destPath, { recursive: true });
+                    } catch (err) {
+                        console.warn(`[CheckpointManager] Failed to create empty dir ${dir}:`, err);
+                    }
+                }
+                
+                console.log(`[CheckpointManager] Full backup: ${fileCount} files`);
+            }
             
             // 创建检查点记录
             const phaseText = phase === 'before'
@@ -208,7 +295,11 @@ export class CheckpointManager {
                 backupDir: checkpointId,
                 fileCount,
                 contentHash,
-                description: `${phaseText}: ${toolName}`
+                description: `${phaseText}: ${toolName}`,
+                type: isIncremental ? 'incremental' : 'full',
+                baseCheckpointId: isIncremental ? baseCheckpointId : undefined,
+                changes: isIncremental ? changes : undefined,
+                fileHashes: currentHashes
             };
             
             // 保存到对话元数据
@@ -498,13 +589,92 @@ export class CheckpointManager {
     }
     
     /**
+     * 计算两个文件哈希映射之间的差异
+     */
+    private computeChanges(
+        oldHashes: Record<string, string>,
+        newHashes: Record<string, string>
+    ): { added: string[]; modified: string[]; deleted: string[] } {
+        const added: string[] = [];
+        const modified: string[] = [];
+        const deleted: string[] = [];
+        
+        // 检查新增和修改的文件
+        for (const [path, hash] of Object.entries(newHashes)) {
+            if (!(path in oldHashes)) {
+                added.push(path);
+            } else if (oldHashes[path] !== hash) {
+                modified.push(path);
+            }
+        }
+        
+        // 检查删除的文件
+        for (const path of Object.keys(oldHashes)) {
+            if (!(path in newHashes)) {
+                deleted.push(path);
+            }
+        }
+        
+        return { added, modified, deleted };
+    }
+    
+    /**
+     * 查找完整备份的基准点
+     * 从目标检查点向前查找，直到找到完整备份
+     */
+    private findBaseCheckpoint(
+        checkpoints: CheckpointRecord[],
+        targetCheckpoint: CheckpointRecord
+    ): CheckpointRecord | null {
+        // 如果目标本身是完整备份
+        if (targetCheckpoint.type !== 'incremental') {
+            return targetCheckpoint;
+        }
+        
+        // 查找基准检查点
+        if (!targetCheckpoint.baseCheckpointId) {
+            return null;
+        }
+        
+        const baseCheckpoint = checkpoints.find(cp => cp.id === targetCheckpoint.baseCheckpointId);
+        if (!baseCheckpoint) {
+            return null;
+        }
+        
+        // 递归查找（如果基准也是增量的话）
+        return this.findBaseCheckpoint(checkpoints, baseCheckpoint);
+    }
+    
+    /**
+     * 获取从基准点到目标点的增量链
+     */
+    private getIncrementalChain(
+        checkpoints: CheckpointRecord[],
+        targetCheckpoint: CheckpointRecord
+    ): CheckpointRecord[] {
+        const chain: CheckpointRecord[] = [];
+        let current: CheckpointRecord | undefined = targetCheckpoint;
+        
+        while (current) {
+            chain.unshift(current);  // 添加到链的开头
+            
+            if (current.type !== 'incremental' || !current.baseCheckpointId) {
+                break;  // 到达完整备份，停止
+            }
+            
+            current = checkpoints.find(cp => cp.id === current!.baseCheckpointId);
+        }
+        
+        return chain;
+    }
+    
+    /**
      * 恢复到指定检查点
      *
-     * 智能恢复逻辑：
-     * 1. 比较备份文件和工作区文件的哈希
-     * 2. 只删除不在备份中的文件
-     * 3. 只复制内容有变化的文件
-     * 4. 跳过内容相同的文件（避免不必要的读写）
+     * 支持增量备份恢复：
+     * 1. 如果是完整备份，直接恢复
+     * 2. 如果是增量备份，先恢复基准点，然后按顺序应用增量变更
+     * 3. 智能比较哈希，只更新有变化的文件
      */
     async restoreCheckpoint(
         conversationId: string,
@@ -524,111 +694,112 @@ export class CheckpointManager {
                 return { success: false, restored: 0, deleted: 0, skipped: 0, error: 'Checkpoint not found' };
             }
             
-            const backupPath = path.join(this.checkpointsDir, checkpoint.backupDir);
-            
-            // 检查备份目录是否存在
-            try {
-                await fs.access(backupPath);
-            } catch {
-                return { success: false, restored: 0, deleted: 0, skipped: 0, error: 'Backup directory not found' };
-            }
-            
             // 在恢复前，取消所有 pending diffs（因为恢复后它们将无效）
             try {
                 const diffManager = getDiffManager();
                 await diffManager.cancelAllPending();
             } catch (err) {
-                // 忽略 DiffManager 相关错误
                 console.warn('[CheckpointManager] Failed to cancel pending diffs:', err);
             }
             
-            // 从备份目录递归收集所有 .gitignore 规则
-            const ignorePatterns = await this.loadAllGitignorePatterns(backupPath);
+            // 获取目标检查点的文件哈希映射（这是最终目标状态）
+            const targetHashes = checkpoint.fileHashes;
             
-            // 收集备份的文件和目录
-            const { files: backupFiles, dirs: backupDirs } = await this.collectFilesAndDirsWithPatterns(backupPath, ignorePatterns);
-            const backupRelativePaths = new Set(
-                backupFiles.map(f => path.relative(backupPath, f))
-            );
+            // 如果没有 fileHashes（旧版本检查点），回退到原来的逻辑
+            if (!targetHashes) {
+                return this.restoreCheckpointLegacy(conversationId, checkpointId, checkpoint);
+            }
             
-            // 收集工作区文件
+            // 获取增量链（从基准点到目标点）
+            const chain = this.getIncrementalChain(checkpoints, checkpoint);
+            if (chain.length === 0) {
+                return { success: false, restored: 0, deleted: 0, skipped: 0, error: 'Cannot build checkpoint chain' };
+            }
+            
+            // 验证链的完整性（确保所有备份目录都存在）
+            for (const cp of chain) {
+                const backupPath = path.join(this.checkpointsDir, cp.backupDir);
+                try {
+                    await fs.access(backupPath);
+                } catch {
+                    return { success: false, restored: 0, deleted: 0, skipped: 0, error: `Backup directory not found: ${cp.backupDir}` };
+                }
+            }
+            
+            const ignorePatterns = await this.loadAllGitignorePatterns(workspaceRoot.fsPath);
+            
+            // 收集当前工作区文件
             const { files: workspaceFiles } = await this.collectFilesAndDirsWithPatterns(workspaceRoot.fsPath, ignorePatterns);
-            const workspaceRelativePaths = new Set(
-                workspaceFiles.map(f => path.relative(workspaceRoot.fsPath, f))
-            );
+            const currentHashes: Record<string, string> = {};
+            for (const file of workspaceFiles) {
+                const relativePath = path.relative(workspaceRoot.fsPath, file);
+                const hash = await this.getFileHash(file);
+                if (hash) {
+                    currentHashes[relativePath] = hash;
+                }
+            }
             
             let deleted = 0;
             let restored = 0;
             let skipped = 0;
-            
-            // 记录所有被修改的文件路径（用于后续刷新）
             const modifiedFiles: string[] = [];
             const deletedFiles: string[] = [];
             
-            // 第一步：删除工作区中不在备份里的文件
-            for (const file of workspaceFiles) {
-                const relativePath = path.relative(workspaceRoot.fsPath, file);
-                if (!backupRelativePaths.has(relativePath)) {
-                    try {
-                        await fs.unlink(file);
-                        deleted++;
-                        deletedFiles.push(file);
-                    } catch (err) {
-                        console.warn(`[CheckpointManager] Failed to delete ${relativePath}:`, err);
-                    }
+            // 计算需要的变更
+            const { added, modified, deleted: toDelete } = this.computeChanges(currentHashes, targetHashes);
+            
+            // 删除多余的文件
+            for (const relativePath of toDelete) {
+                const fullPath = path.join(workspaceRoot.fsPath, relativePath);
+                try {
+                    await fs.unlink(fullPath);
+                    deleted++;
+                    deletedFiles.push(fullPath);
+                } catch (err) {
+                    console.warn(`[CheckpointManager] Failed to delete ${relativePath}:`, err);
                 }
             }
             
             // 清理空目录
             await this.cleanupEmptyDirsRecursive(workspaceRoot.fsPath, ignorePatterns);
             
-            // 第二步：智能复制备份中的文件到工作区
-            for (const backupFile of backupFiles) {
-                const relativePath = path.relative(backupPath, backupFile);
+            // 恢复需要添加/修改的文件
+            const filesToRestore = [...added, ...modified];
+            for (const relativePath of filesToRestore) {
+                // 在增量链中查找这个文件
+                const srcPath = await this.findFileInChain(chain, relativePath);
+                
+                if (!srcPath) {
+                    console.warn(`[CheckpointManager] Cannot find ${relativePath} in backup chain`);
+                    continue;
+                }
+                
                 const destPath = path.join(workspaceRoot.fsPath, relativePath);
                 
                 try {
-                    // 检查工作区是否已有此文件
-                    if (workspaceRelativePaths.has(relativePath)) {
-                        // 比较哈希
-                        const backupHash = await this.getFileHash(backupFile);
-                        const workspaceHash = await this.getFileHash(destPath);
-                        
-                        if (backupHash && workspaceHash && backupHash === workspaceHash) {
-                            // 内容相同，跳过
-                            skipped++;
-                            continue;
-                        }
+                    // 验证文件哈希是否匹配目标
+                    const srcHash = await this.getFileHash(srcPath);
+                    if (srcHash !== targetHashes[relativePath]) {
+                        console.warn(`[CheckpointManager] Hash mismatch for ${relativePath}`);
+                        continue;
                     }
                     
-                    // 确保目标目录存在
                     await fs.mkdir(path.dirname(destPath), { recursive: true });
-                    
-                    // 复制文件
-                    await fs.copyFile(backupFile, destPath);
+                    await fs.copyFile(srcPath, destPath);
                     restored++;
                     modifiedFiles.push(destPath);
                 } catch (err) {
-                    console.warn(`[CheckpointManager] Failed to restore ${backupFile}:`, err);
+                    console.warn(`[CheckpointManager] Failed to restore ${relativePath}:`, err);
                 }
             }
             
-            // 第三步：恢复空目录
-            for (const dir of backupDirs) {
-                try {
-                    const relativePath = path.relative(backupPath, dir);
-                    const destPath = path.join(workspaceRoot.fsPath, relativePath);
-                    await fs.mkdir(destPath, { recursive: true });
-                } catch (err) {
-                    console.warn(`[CheckpointManager] Failed to restore empty dir ${dir}:`, err);
-                }
-            }
+            // 跳过的文件数量（当前哈希与目标哈希相同的文件）
+            skipped = Object.keys(targetHashes).length - added.length - modified.length;
             
-            // 第四步：只刷新 VSCode 中被修改的文档（而非所有文档）
-            // 这是必要的，因为我们通过文件系统直接修改了文件，需要让 VSCode 重新读取
+            // 刷新 VSCode 中被修改的文档
             await this.refreshAffectedDocuments(modifiedFiles, deletedFiles);
             
-            // 使用 VSCode 状态栏显示恢复结果（5秒后自动消失）
+            // 显示恢复结果
             const phaseText = checkpoint.phase === 'before'
                 ? t('modules.checkpoint.description.before')
                 : t('modules.checkpoint.description.after');
@@ -642,6 +813,8 @@ export class CheckpointManager {
             }
             vscode.window.setStatusBarMessage(message, 5000);
             
+            console.log(`[CheckpointManager] Restore from chain: ${chain.length} checkpoints, restored=${restored}, deleted=${deleted}, skipped=${skipped}`);
+            
             return { success: true, restored, deleted, skipped };
             
         } catch (err) {
@@ -649,6 +822,140 @@ export class CheckpointManager {
             console.error('[CheckpointManager] Failed to restore checkpoint:', err);
             return { success: false, restored: 0, deleted: 0, skipped: 0, error };
         }
+    }
+    
+    /**
+     * 在增量链中查找文件
+     * 从最新的检查点向前查找，返回第一个包含该文件的备份路径
+     */
+    private async findFileInChain(
+        chain: CheckpointRecord[],
+        relativePath: string
+    ): Promise<string | null> {
+        // 从链的末尾（最新）向前查找
+        for (let i = chain.length - 1; i >= 0; i--) {
+            const cp = chain[i];
+            const filePath = path.join(this.checkpointsDir, cp.backupDir, relativePath);
+            
+            try {
+                await fs.access(filePath);
+                return filePath;  // 找到了
+            } catch {
+                // 文件不在这个备份中，继续向前查找
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * 旧版本恢复逻辑（用于不包含 fileHashes 的检查点）
+     */
+    private async restoreCheckpointLegacy(
+        conversationId: string,
+        checkpointId: string,
+        checkpoint: CheckpointRecord
+    ): Promise<{ success: boolean; restored: number; deleted: number; skipped: number; error?: string }> {
+        const workspaceRoot = this.getWorkspaceRoot()!;
+        const backupPath = path.join(this.checkpointsDir, checkpoint.backupDir);
+        
+        // 检查备份目录是否存在
+        try {
+            await fs.access(backupPath);
+        } catch {
+            return { success: false, restored: 0, deleted: 0, skipped: 0, error: 'Backup directory not found' };
+        }
+        
+        // 从备份目录递归收集所有 .gitignore 规则
+        const ignorePatterns = await this.loadAllGitignorePatterns(backupPath);
+        
+        // 收集备份的文件和目录
+        const { files: backupFiles, dirs: backupDirs } = await this.collectFilesAndDirsWithPatterns(backupPath, ignorePatterns);
+        const backupRelativePaths = new Set(
+            backupFiles.map(f => path.relative(backupPath, f))
+        );
+        
+        // 收集工作区文件
+        const { files: workspaceFiles } = await this.collectFilesAndDirsWithPatterns(workspaceRoot.fsPath, ignorePatterns);
+        const workspaceRelativePaths = new Set(
+            workspaceFiles.map(f => path.relative(workspaceRoot.fsPath, f))
+        );
+        
+        let deleted = 0;
+        let restored = 0;
+        let skipped = 0;
+        const modifiedFiles: string[] = [];
+        const deletedFiles: string[] = [];
+        
+        // 删除工作区中不在备份里的文件
+        for (const file of workspaceFiles) {
+            const relativePath = path.relative(workspaceRoot.fsPath, file);
+            if (!backupRelativePaths.has(relativePath)) {
+                try {
+                    await fs.unlink(file);
+                    deleted++;
+                    deletedFiles.push(file);
+                } catch (err) {
+                    console.warn(`[CheckpointManager] Failed to delete ${relativePath}:`, err);
+                }
+            }
+        }
+        
+        // 清理空目录
+        await this.cleanupEmptyDirsRecursive(workspaceRoot.fsPath, ignorePatterns);
+        
+        // 复制备份中的文件到工作区
+        for (const backupFile of backupFiles) {
+            const relativePath = path.relative(backupPath, backupFile);
+            const destPath = path.join(workspaceRoot.fsPath, relativePath);
+            
+            try {
+                if (workspaceRelativePaths.has(relativePath)) {
+                    const backupHash = await this.getFileHash(backupFile);
+                    const workspaceHash = await this.getFileHash(destPath);
+                    
+                    if (backupHash && workspaceHash && backupHash === workspaceHash) {
+                        skipped++;
+                        continue;
+                    }
+                }
+                
+                await fs.mkdir(path.dirname(destPath), { recursive: true });
+                await fs.copyFile(backupFile, destPath);
+                restored++;
+                modifiedFiles.push(destPath);
+            } catch (err) {
+                console.warn(`[CheckpointManager] Failed to restore ${backupFile}:`, err);
+            }
+        }
+        
+        // 恢复空目录
+        for (const dir of backupDirs) {
+            try {
+                const relativePath = path.relative(backupPath, dir);
+                const destPath = path.join(workspaceRoot.fsPath, relativePath);
+                await fs.mkdir(destPath, { recursive: true });
+            } catch (err) {
+                console.warn(`[CheckpointManager] Failed to restore empty dir ${dir}:`, err);
+            }
+        }
+        
+        await this.refreshAffectedDocuments(modifiedFiles, deletedFiles);
+        
+        const phaseText = checkpoint.phase === 'before'
+            ? t('modules.checkpoint.description.before')
+            : t('modules.checkpoint.description.after');
+        let message = `$(check) ${t('modules.checkpoint.restore.success', { toolName: checkpoint.toolName, phase: phaseText })}`;
+        const details: string[] = [];
+        if (restored > 0) details.push(t('modules.checkpoint.restore.filesUpdated', { count: restored }));
+        if (deleted > 0) details.push(t('modules.checkpoint.restore.filesDeleted', { count: deleted }));
+        if (skipped > 0) details.push(t('modules.checkpoint.restore.filesUnchanged', { count: skipped }));
+        if (details.length > 0) {
+            message += `（${details.join('，')}）`;
+        }
+        vscode.window.setStatusBarMessage(message, 5000);
+        
+        return { success: true, restored, deleted, skipped };
     }
     
     /**

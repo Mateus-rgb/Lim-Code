@@ -131,3 +131,37 @@ export async function showNotification(
     console.error('Failed to show notification:', err)
   }
 }
+
+/**
+ * 加载 diff 内容（用于 apply_diff 工具的按需加载）
+ *
+ * @param diffContentId Diff 内容 ID
+ * @returns Diff 内容或 null
+ */
+export async function loadDiffContent(diffContentId: string): Promise<{
+  originalContent: string
+  newContent: string
+  filePath: string
+} | null> {
+  try {
+    const result = await sendToExtension<{
+      success: boolean
+      originalContent?: string
+      newContent?: string
+      filePath?: string
+      error?: string
+    }>('diff.loadContent', { diffContentId })
+    
+    if (result.success && result.originalContent && result.newContent) {
+      return {
+        originalContent: result.originalContent,
+        newContent: result.newContent,
+        filePath: result.filePath || ''
+      }
+    }
+    return null
+  } catch (err) {
+    console.error('Failed to load diff content:', err)
+    return null
+  }
+}

@@ -115,6 +115,17 @@ export interface BackendLanguageMessages {
                 saveFailed: string;
                 invalidValue: string;
             };
+            storage: {
+                pathNotAbsolute: string;
+                pathNotDirectory: string;
+                createDirectoryFailed: string;
+                migrationFailed: string;
+                migrationSuccess: string;
+                migratingFiles: string;
+                migratingConversations: string;
+                migratingCheckpoints: string;
+                migratingConfigs: string;
+            };
         };
 
         /** 依赖管理模块 */
@@ -427,6 +438,8 @@ export interface BackendLanguageMessages {
             
             /** Diff 预览相关 */
             openDiffPreviewFailed: string;
+            diffContentNotFound: string;
+            loadDiffContentFailed: string;
             invalidDiffData: string;
             noFileContent: string;
             unsupportedToolType: string;
@@ -487,12 +500,24 @@ export interface BackendLanguageMessages {
             
             /** 工具拒绝相关 */
             rejectToolCallsFailed: string;
+            
+            /** 存储配置相关 */
+            getStorageConfigFailed: string;
+            updateStorageConfigFailed: string;
+            validateStoragePathFailed: string;
+            migrateStorageFailed: string;
         };
         
         messages: {
             /** Diff 预览标题 */
             historyDiffPreview: string;
             newFileContentPreview: string;
+            fullFileDiffPreview: string;
+            searchReplaceDiffPreview: string;
+        };
+        dialogs: {
+            selectStorageFolder: string;
+            selectFolder: string;
         };
     };
 

@@ -14,6 +14,7 @@ import type { SettingsManager } from '../modules/settings';
 import type { ConfigManager } from '../modules/config';
 import type { ChannelManager } from '../modules/channel';
 import type { ToolRegistry } from '../tools/ToolRegistry';
+import type { DiffStorageManager } from '../modules/conversation/DiffStorageManager';
 
 /**
  * 全局上下文接口
@@ -23,6 +24,7 @@ export interface GlobalContext {
     configManager: ConfigManager | null;
     channelManager: ChannelManager | null;
     toolRegistry: ToolRegistry | null;
+    diffStorageManager: DiffStorageManager | null;
 }
 
 /**
@@ -32,7 +34,8 @@ const globalContext: GlobalContext = {
     settingsManager: null,
     configManager: null,
     channelManager: null,
-    toolRegistry: null
+    toolRegistry: null,
+    diffStorageManager: null
 };
 
 // ========== 设置管理器 ==========
@@ -99,6 +102,22 @@ export function getGlobalToolRegistry(): ToolRegistry | null {
     return globalContext.toolRegistry;
 }
 
+// ========== Diff 存储管理器 ==========
+
+/**
+ * 设置全局 Diff 存储管理器引用
+ */
+export function setGlobalDiffStorageManager(manager: DiffStorageManager): void {
+    globalContext.diffStorageManager = manager;
+}
+
+/**
+ * 获取全局 Diff 存储管理器
+ */
+export function getGlobalDiffStorageManager(): DiffStorageManager | null {
+    return globalContext.diffStorageManager;
+}
+
 // ========== 便捷方法 ==========
 
 /**
@@ -124,6 +143,9 @@ export function initGlobalContext(context: Partial<GlobalContext>): void {
     if (context.toolRegistry) {
         globalContext.toolRegistry = context.toolRegistry;
     }
+    if (context.diffStorageManager) {
+        globalContext.diffStorageManager = context.diffStorageManager;
+    }
 }
 
 /**
@@ -134,4 +156,5 @@ export function clearGlobalContext(): void {
     globalContext.configManager = null;
     globalContext.channelManager = null;
     globalContext.toolRegistry = null;
+    globalContext.diffStorageManager = null;
 }

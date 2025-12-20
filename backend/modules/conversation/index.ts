@@ -127,3 +127,13 @@ export {
     getTokenEfficiency,
     formatTokenCount
 } from './tokenUtils';
+
+// Diff 存储管理器（用于抽离 apply_diff 的 originalContent/newContent）
+export {
+    DiffStorageManager,
+    getDiffStorageManager
+} from './DiffStorageManager';
+export type {
+    DiffContent,
+    DiffReference
+} from './DiffStorageManager';

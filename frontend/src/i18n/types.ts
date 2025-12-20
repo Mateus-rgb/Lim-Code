@@ -1310,6 +1310,41 @@ export interface LanguageMessages {
                     tooltip: string;
                 };
             };
+            storageSettings: {
+                title: string;
+                description: string;
+                currentPath: string;
+                customPath: string;
+                customPathPlaceholder: string;
+                customPathHint: string;
+                browse: string;
+                apply: string;
+                reset: string;
+                migrate: string;
+                migrateHint: string;
+                migrating: string;
+                validating: string;
+                validation: {
+                    valid: string;
+                    invalid: string;
+                    checking: string;
+                };
+                dialog: {
+                    migrateTitle: string;
+                    migrateMessage: string;
+                    migrateWarning: string;
+                    confirm: string;
+                    cancel: string;
+                };
+                notifications: {
+                    pathUpdated: string;
+                    pathReset: string;
+                    migrationSuccess: string;
+                    migrationFailed: string;
+                    validationFailed: string;
+                };
+                reloadWindow: string;
+            };
         };
 
         /** channels 目录 - 渠道配置选项 */
@@ -1559,6 +1594,9 @@ export interface LanguageMessages {
                     collapse: string;
                     expandRemaining: string;
                     noContent: string;
+                    viewContent: string;
+                    viewDiff: string;
+                    loadingDiff: string;
                     actions: {
                         created: string;
                         modified: string;
@@ -1587,16 +1625,26 @@ export interface LanguageMessages {
                 /** search_in_files 内容面板 */
                 searchInFilesPanel: {
                     title: string;
+                    replaceTitle: string;
                     regex: string;
+                    dryRun: string;
                     matchCount: string;
                     fileCount: string;
                     truncated: string;
                     keywords: string;
+                    replaceWith: string;
+                    emptyString: string;
                     path: string;
                     pattern: string;
                     noResults: string;
                     collapse: string;
                     expandRemaining: string;
+                    replacements: string;
+                    replacementsInFile: string;
+                    filesModified: string;
+                    viewMatches: string;
+                    viewDiff: string;
+                    loadingDiff: string;
                 };
             };
             /** 终端工具 */

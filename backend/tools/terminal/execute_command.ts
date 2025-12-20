@@ -807,19 +807,17 @@ ${getAvailableShellsDescription()}${workspaceDescription}
                             duration
                         });
 
-                        // 生成消息说明
-                        let message: string | undefined;
-                        if (isExternalAbort) {
-                            message = 'User cancelled the command execution via stop button';
-                        } else if (terminalProcess.killed) {
-                            message = 'User manually terminated the command execution';
-                        } else if (code === 0) {
-                            message = 'Command executed successfully';
-                        }
+                        // 简化返回结构：AI 已知 command/cwd/shell，只需返回结果
+                        // 如果输出被截断，添加简单提示
+                        const wasTruncated = maxLines !== -1 && terminalProcess.output.length > maxLines;
+                        const truncatedNote = wasTruncated
+                            ? `(Output truncated: showing last ${lastOutput.length} of ${terminalProcess.output.length} lines)`
+                            : undefined;
                         
                         resolve({
                             success: isExternalAbort ? false : success,
                             data: {
+                                // 前端需要这些用于 UI 显示，但 AI 不需要（会在 ConversationManager 中过滤）
                                 terminalId,
                                 command,
                                 cwd: workingDir,
@@ -827,11 +825,9 @@ ${getAvailableShellsDescription()}${workspaceDescription}
                                 exitCode: code,
                                 killed: terminalProcess.killed || false,
                                 duration,
+                                // AI 只需要 output 和 exitCode
                                 output: lastOutput.join('\n'),
-                                outputLines: lastOutput.length,
-                                totalLines: terminalProcess.output.length,
-                                truncated: maxLines !== -1 && terminalProcess.output.length > maxLines,
-                                message
+                                truncatedNote
                             },
                             error,
                             cancelled: isExternalAbort
@@ -873,12 +869,12 @@ ${getAvailableShellsDescription()}${workspaceDescription}
                         resolve({
                             success: false,
                             data: {
+                                // 前端需要这些用于 UI 显示
                                 terminalId,
                                 command,
                                 cwd: workingDir,
                                 shell,
-                                output: lastOutput.join('\n'),
-                                outputLines: lastOutput.length
+                                output: lastOutput.join('\n')
                             },
                             error: `Failed to execute command: ${err.message}`
                         });

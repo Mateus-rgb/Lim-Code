@@ -1139,7 +1139,7 @@ const en: LanguageMessages = {
                 appInfo: {
                     title: 'Application Info',
                     name: 'Lim Code - Vibe Coding Assistant',
-                    version: 'Version: 1.0.6',
+                    version: 'Version: 1.0.7',
                     repository: 'Repository',
                     developer: 'Developer'
                 }
@@ -1272,6 +1272,41 @@ const en: LanguageMessages = {
                 config: {
                     tooltip: 'Configure Tool'
                 }
+            },
+            storageSettings: {
+                title: 'Storage Path',
+                description: 'Configure storage location for conversation history, checkpoints, etc.',
+                currentPath: 'Current Storage Path',
+                customPath: 'Custom Path',
+                customPathPlaceholder: 'Enter custom storage path...',
+                customPathHint: 'Leave empty to use default path (extension storage directory)',
+                browse: 'Browse',
+                apply: 'Apply',
+                reset: 'Reset to Default',
+                migrate: 'Migrate Data',
+                migrateHint: 'Migrate existing data to new path',
+                migrating: 'Migrating...',
+                validating: 'Validating...',
+                validation: {
+                    valid: 'Path is valid',
+                    invalid: 'Path is invalid',
+                    checking: 'Checking...'
+                },
+                dialog: {
+                    migrateTitle: 'Confirm Data Migration',
+                    migrateMessage: 'Do you want to migrate existing data to the new path? This will copy all conversation history and checkpoints.',
+                    migrateWarning: 'Do not close the window during migration',
+                    confirm: 'Confirm Migration',
+                    cancel: 'Cancel'
+                },
+                notifications: {
+                    pathUpdated: 'Storage path updated',
+                    pathReset: 'Storage path reset to default',
+                    migrationSuccess: 'Data migration completed, please reload window for changes to take effect',
+                    migrationFailed: 'Data migration failed: {error}',
+                    validationFailed: 'Path validation failed: {error}'
+                },
+                reloadWindow: 'Reload Window'
             }
         },
 
@@ -1500,6 +1535,9 @@ const en: LanguageMessages = {
                     collapse: 'Collapse',
                     expandRemaining: 'Expand remaining {count} lines',
                     noContent: 'No content to write',
+                    viewContent: 'Content',
+                    viewDiff: 'Diff',
+                    loadingDiff: 'Loading diff...',
                     actions: {
                         created: 'Created',
                         modified: 'Modified',
@@ -1525,16 +1563,26 @@ const en: LanguageMessages = {
                 },
                 searchInFilesPanel: {
                     title: 'Search Content',
+                    replaceTitle: 'Search and Replace',
                     regex: 'Regex',
+                    dryRun: 'Preview',
                     matchCount: '{count} matches',
                     fileCount: '{count} files',
                     truncated: 'Truncated',
                     keywords: 'Keywords:',
+                    replaceWith: 'Replace with:',
+                    emptyString: '(empty string)',
                     path: 'Path:',
                     pattern: 'Pattern:',
                     noResults: 'No matching content found',
                     collapse: 'Collapse',
-                    expandRemaining: 'Expand remaining {count} matches'
+                    expandRemaining: 'Expand remaining {count} matches',
+                    replacements: 'Replaced {count} occurrences',
+                    replacementsInFile: '{count} replacements',
+                    filesModified: '{count} files',
+                    viewMatches: 'Matches',
+                    viewDiff: 'Diff',
+                    loadingDiff: 'Loading diff...'
                 }
             },
             terminal: {

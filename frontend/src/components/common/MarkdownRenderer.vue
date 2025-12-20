@@ -2,17 +2,29 @@
 /**
  * MarkdownRenderer - Markdown 和 LaTeX 渲染组件
  *
- * 支持：
- * - Markdown 语法渲染
- * - LaTeX 数学公式（行内 $...$ 和块级 $$...$$）
+ * 使用 markdown-it 作为渲染引擎，支持：
+ * - 完整 GFM 语法
+ * - 脚注
+ * - 定义列表
+ * - 任务列表
  * - 代码高亮
+ * - LaTeX 数学公式
  */
 
 import { computed, ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { marked } from 'marked'
+import MarkdownIt from 'markdown-it'
+import type { Options } from 'markdown-it'
+import type Token from 'markdown-it/lib/token.mjs'
+import type Renderer from 'markdown-it/lib/renderer.mjs'
+import type StateCore from 'markdown-it/lib/rules_core/state_core.mjs'
 import hljs from 'highlight.js'
 import katex from 'katex'
 import { sendToExtension } from '@/utils/vscode'
+
+// 插件导入
+import footnote from 'markdown-it-footnote'
+import deflist from 'markdown-it-deflist'
+import taskLists from 'markdown-it-task-lists'
 
 const props = withDefaults(defineProps<{
   content: string
@@ -30,40 +42,135 @@ const copyTimers = new Map<HTMLButtonElement, number>()
 // 图片加载状态
 const imageCache = new Map<string, string>()
 
+/**
+ * 创建并配置 markdown-it 实例
+ */
+function createMarkdownIt() {
+  const md = new MarkdownIt({
+    html: true,           // 允许 HTML 标签
+    xhtmlOut: false,
+    breaks: true,         // 换行转 <br>
+    linkify: true,        // 自动检测链接
+    typographer: true,    // 启用智能引号等排版功能
+    highlight: function (str: string, lang: string) {
+      // 代码高亮
+      let highlighted: string
+      let langClass = ''
+      
+      if (lang && hljs.getLanguage(lang)) {
+        try {
+          highlighted = hljs.highlight(str, { language: lang }).value
+          langClass = `language-${lang}`
+        } catch (e) {
+          highlighted = hljs.highlightAuto(str).value
+        }
+      } else {
+        highlighted = hljs.highlightAuto(str).value
+      }
+      
+      // 对原始代码进行 base64 编码以便复制时解码
+      const encodedCode = btoa(encodeURIComponent(str))
+      
+      // 返回以 <pre 开头的字符串，避免 markdown-it 额外包裹
+      return `<pre class="hljs code-block-wrapper"><button class="code-copy-btn" data-code="${encodedCode}" title="复制代码"><span class="copy-icon codicon codicon-copy"></span><span class="check-icon codicon codicon-check"></span></button><code class="${langClass}">${highlighted}</code></pre>`
+    }
+  })
+  
+  // 加载插件
+  md.use(footnote)       // 脚注支持
+  md.use(deflist)        // 定义列表支持
+  md.use(taskLists, {    // 任务列表支持
+    enabled: true,
+    label: true,
+    labelAfter: true
+  })
+  
+  // 自定义链接渲染 - 外部链接在新标签页打开
+  const defaultLinkRender = md.renderer.rules.link_open || function(
+    tokens: Token[],
+    idx: number,
+    options: Options,
+    _env: StateCore,
+    self: Renderer
+  ) {
+    return self.renderToken(tokens, idx, options)
+  }
+  
+  md.renderer.rules.link_open = function(
+    tokens: Token[],
+    idx: number,
+    options: Options,
+    env: StateCore,
+    self: Renderer
+  ) {
+    const token = tokens[idx]
+    const href = token.attrGet('href') || ''
+    
+    // 检查是否是外部链接
+    if (/^(https?:\/\/|mailto:|tel:)/i.test(href)) {
+      token.attrSet('target', '_blank')
+      token.attrSet('rel', 'noopener noreferrer')
+    }
+    
+    return defaultLinkRender(tokens, idx, options, env, self)
+  }
+  
+  // 自定义图片渲染 - 支持相对路径
+  md.renderer.rules.image = function(tokens: Token[], idx: number) {
+    const token = tokens[idx]
+    const src = token.attrGet('src') || ''
+    const alt = token.content || ''
+    const title = token.attrGet('title') || ''
+    
+    // 检查是否是绝对 URL
+    const isAbsoluteUrl = /^(https?:\/\/|data:)/i.test(src)
+    
+    if (isAbsoluteUrl) {
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
+      return `<img src="${src}" alt="${escapeHtml(alt)}"${titleAttr} loading="lazy">`
+    } else {
+      // 相对路径，使用占位符，稍后异步加载
+      const encodedPath = btoa(encodeURIComponent(src))
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
+      return `<img class="workspace-image" data-path="${encodedPath}" alt="${escapeHtml(alt)}"${titleAttr} src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" loading="lazy">`
+    }
+  }
+  
+  return md
+}
+
+// 创建 markdown-it 实例
+const md = createMarkdownIt()
 
 /**
  * 处理 LaTeX 公式
- * 
- * 支持：
- * - 行内公式：$...$
- * - 块级公式：$$...$$
  */
 function processLatex(text: string): string {
   // 先处理块级公式 $$...$$
-  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match, formula) => {
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_match, formula) => {
     try {
       return `<div class="katex-block">${katex.renderToString(formula.trim(), {
         displayMode: true,
         throwOnError: false,
-        output: 'html'  // 只输出 HTML，不输出 MathML
+        output: 'html'
       })}</div>`
     } catch (e) {
       console.warn('KaTeX block render error:', e)
-      return `<div class="katex-error">${match}</div>`
+      return `<div class="katex-error">$$${escapeHtml(formula)}$$</div>`
     }
   })
   
   // 再处理行内公式 $...$（排除已处理的块级公式）
-  text = text.replace(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+?)\$(?!\$)/g, (match, formula) => {
+  text = text.replace(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+?)\$(?!\$)/g, (_match, formula) => {
     try {
       return katex.renderToString(formula.trim(), {
         displayMode: false,
         throwOnError: false,
-        output: 'html'  // 只输出 HTML，不输出 MathML
+        output: 'html'
       })
     } catch (e) {
       console.warn('KaTeX inline render error:', e)
-      return `<span class="katex-error">${match}</span>`
+      return `<span class="katex-error">$${escapeHtml(formula)}$</span>`
     }
   })
   
@@ -71,93 +178,8 @@ function processLatex(text: string): string {
 }
 
 /**
- * 配置 marked
- */
-function setupMarked() {
-  // 自定义 renderer
-  const renderer = new marked.Renderer()
-  
-  // 代码块高亮
-  renderer.code = function(code: string | { text: string, lang?: string }, language?: string) {
-    // 处理新版 marked 的参数格式
-    let codeText: string
-    let lang: string | undefined
-    
-    if (typeof code === 'object' && code !== null) {
-      codeText = code.text
-      lang = code.lang
-    } else {
-      codeText = code as string
-      lang = language
-    }
-    
-    let highlighted: string
-    let langClass = ''
-    
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        highlighted = hljs.highlight(codeText, { language: lang }).value
-        langClass = `language-${lang}`
-      } catch (e) {
-        // 高亮失败，使用自动检测
-        highlighted = hljs.highlightAuto(codeText).value
-      }
-    } else {
-      // 无语言或高亮失败，使用自动检测
-      highlighted = hljs.highlightAuto(codeText).value
-    }
-    
-    // 对原始代码进行 base64 编码以便复制时解码
-    const encodedCode = btoa(encodeURIComponent(codeText))
-    
-    return `<div class="code-block-wrapper">
-      <button class="code-copy-btn" data-code="${encodedCode}" title="复制代码">
-        <span class="copy-icon codicon codicon-copy"></span>
-        <span class="check-icon codicon codicon-check"></span>
-      </button>
-      <pre class="hljs"><code class="${langClass}">${highlighted}</code></pre>
-    </div>`
-  }
-  
-  // 行内代码
-  renderer.codespan = function(text: string | { text: string }) {
-    const codeText = typeof text === 'object' ? text.text : text
-    return `<code class="inline-code">${codeText}</code>`
-  }
-  
-  // 图片渲染 - 支持相对路径
-  renderer.image = function(token: { href: string; title: string | null; text: string }) {
-    const imgHref = token.href
-    const imgTitle = token.title
-    const imgAlt = token.text || ''
-    
-    // 检查是否是绝对 URL（http/https/data）
-    const isAbsoluteUrl = /^(https?:\/\/|data:)/i.test(imgHref)
-    
-    if (isAbsoluteUrl) {
-      // 绝对 URL 直接渲染
-      const titleAttr = imgTitle ? ` title="${escapeHtml(imgTitle)}"` : ''
-      return `<img src="${imgHref}" alt="${escapeHtml(imgAlt)}"${titleAttr} loading="lazy">`
-    } else {
-      // 相对路径，使用占位符，稍后异步加载
-      // 使用 base64 编码路径避免特殊字符问题
-      const encodedPath = btoa(encodeURIComponent(imgHref))
-      const titleAttr = imgTitle ? ` title="${escapeHtml(imgTitle)}"` : ''
-      return `<img class="workspace-image" data-path="${encodedPath}" alt="${escapeHtml(imgAlt)}"${titleAttr} src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" loading="lazy">`
-    }
-  }
-  
-  marked.setOptions({
-    renderer,
-    gfm: true,
-    breaks: true
-  })
-}
-
-/**
  * 仅渲染 LaTeX（保留原始文本格式）
- *
- * 策略：先提取 LaTeX 公式，转义普通文本，再渲染 LaTeX
+ * 用于用户消息：保持原始文本，只渲染 LaTeX 公式，保留换行和空格
  */
 function renderLatexOnly(content: string): string {
   if (!content) return ''
@@ -166,7 +188,7 @@ function renderLatexOnly(content: string): string {
   const formulas: { placeholder: string; rendered: string }[] = []
   let processed = content
   
-  // 1. 提取并渲染块级公式 $$...$$
+  // 提取并渲染块级公式 $$...$$
   processed = processed.replace(/\$\$([\s\S]*?)\$\$/g, (match, formula) => {
     const placeholder = `___LATEX_BLOCK_${formulas.length}___`
     try {
@@ -175,7 +197,7 @@ function renderLatexOnly(content: string): string {
         rendered: `<div class="katex-block">${katex.renderToString(formula.trim(), {
           displayMode: true,
           throwOnError: false,
-          output: 'html'  // 只输出 HTML，不输出 MathML
+          output: 'html'
         })}</div>`
       })
     } catch (e) {
@@ -188,7 +210,7 @@ function renderLatexOnly(content: string): string {
     return placeholder
   })
   
-  // 2. 提取并渲染行内公式 $...$
+  // 提取并渲染行内公式 $...$
   processed = processed.replace(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+?)\$(?!\$)/g, (match, formula) => {
     const placeholder = `___LATEX_INLINE_${formulas.length}___`
     try {
@@ -197,7 +219,7 @@ function renderLatexOnly(content: string): string {
         rendered: katex.renderToString(formula.trim(), {
           displayMode: false,
           throwOnError: false,
-          output: 'html'  // 只输出 HTML，不输出 MathML
+          output: 'html'
         })
       })
     } catch (e) {
@@ -210,16 +232,24 @@ function renderLatexOnly(content: string): string {
     return placeholder
   })
   
-  // 3. 转义普通文本中的 HTML 特殊字符
+  // 转义 HTML 特殊字符（保持原始文本）
   processed = escapeHtml(processed)
   
-  // 4. 还原 LaTeX 公式
+  // 还原 LaTeX 公式
   for (const { placeholder, rendered } of formulas) {
     processed = processed.replace(placeholder, rendered)
   }
   
-  // 5. 保留换行
+  // 保留换行
   processed = processed.replace(/\n/g, '<br>')
+  
+  // 保留多个连续空格
+  processed = processed.replace(/ {2,}/g, (match) => '&nbsp;'.repeat(match.length))
+  
+  // 保留行首空格
+  processed = processed.replace(/(^|<br>)( +)/g, (_match, prefix, spaces) => {
+    return prefix + '&nbsp;'.repeat(spaces.length)
+  })
   
   return processed
 }
@@ -242,35 +272,60 @@ function escapeHtml(text: string): string {
 function renderContent(content: string, latexOnly: boolean): string {
   if (!content) return ''
   
-  // 仅 LaTeX 模式
+  // 仅 LaTeX 模式（用户消息）
   if (latexOnly) {
     return renderLatexOnly(content)
   }
   
   // 完整 Markdown + LaTeX 模式
-  // 1. 先提取代码块，避免代码块内的内容被处理
+  // 1. 先提取代码块，避免代码块内的内容被 LaTeX 处理
   const codeBlocks: string[] = []
   let processed = content.replace(/```[\s\S]*?```/g, (match) => {
     codeBlocks.push(match)
     return `___CODE_BLOCK_${codeBlocks.length - 1}___`
   })
   
-  // 2. 处理 LaTeX
+  // 2. 提取行内代码
+  const inlineCodes: string[] = []
+  processed = processed.replace(/`[^`\n]+`/g, (match) => {
+    inlineCodes.push(match)
+    return `___INLINE_CODE_${inlineCodes.length - 1}___`
+  })
+  
+  // 3. 处理 LaTeX
   processed = processLatex(processed)
   
-  // 3. 还原代码块
+  // 4. 还原行内代码
+  processed = processed.replace(/___INLINE_CODE_(\d+)___/g, (_, index) => {
+    return inlineCodes[parseInt(index)]
+  })
+  
+  // 5. 还原代码块
   processed = processed.replace(/___CODE_BLOCK_(\d+)___/g, (_, index) => {
     return codeBlocks[parseInt(index)]
   })
   
-  // 4. 渲染 Markdown
-  const html = marked.parse(processed) as string
+  // 6. 使用 markdown-it 渲染
+  let html = md.render(processed)
+  
+  // 7. 保留多个连续空格（在段落内容中）
+  html = html.replace(/(<(?:p|li|td|th|dd|dt)[^>]*>)([\s\S]*?)(<\/(?:p|li|td|th|dd|dt)>)/g,
+    (_match: string, openTag: string, content: string, closeTag: string) => {
+      let processedContent = content.replace(/(<br\s*\/?>)( +)/g, (_m: string, br: string, spaces: string) => {
+        return br + '&nbsp;'.repeat(spaces.length)
+      })
+      processedContent = processedContent.replace(/^( +)/, (spaces: string) => {
+        return '&nbsp;'.repeat(spaces.length)
+      })
+      processedContent = processedContent.replace(/ {2,}/g, (spaces: string) => {
+        return '&nbsp;'.repeat(spaces.length)
+      })
+      return openTag + processedContent + closeTag
+    }
+  )
   
   return html
 }
-
-// 立即初始化 marked
-setupMarked()
 
 // 渲染结果
 const renderedContent = computed(() => {
@@ -289,21 +344,16 @@ function handleCopyClick(event: Event) {
   const encodedCode = button.getAttribute('data-code')
   if (!encodedCode) return
   
-  // 解码代码
   const code = decodeURIComponent(atob(encodedCode))
   
-  // 复制到剪贴板
   navigator.clipboard.writeText(code).then(() => {
-    // 清除之前的计时器（如果存在）
     const existingTimer = copyTimers.get(button)
     if (existingTimer) {
       window.clearTimeout(existingTimer)
     }
     
-    // 添加已复制状态
     button.classList.add('copied')
     
-    // 1秒后移除状态
     const timer = window.setTimeout(() => {
       button.classList.remove('copied')
       copyTimers.delete(button)
@@ -317,7 +367,6 @@ function handleCopyClick(event: Event) {
 
 /**
  * 加载工作区图片
- * 将相对路径的图片转换为 data URL
  */
 async function loadWorkspaceImages() {
   if (!containerRef.value) return
@@ -331,17 +380,14 @@ async function loadWorkspaceImages() {
     try {
       const imgPath = decodeURIComponent(atob(encodedPath))
       
-      // 检查缓存
       if (imageCache.has(imgPath)) {
         img.setAttribute('src', imageCache.get(imgPath)!)
         img.classList.remove('workspace-image')
         img.classList.add('loaded-image')
-        // 存储路径用于点击预览
         img.setAttribute('data-image-path', imgPath)
         continue
       }
       
-      // 通过后端读取图片文件
       const response = await sendToExtension<{
         success: boolean;
         data?: string;
@@ -355,10 +401,8 @@ async function loadWorkspaceImages() {
         img.setAttribute('src', dataUrl)
         img.classList.remove('workspace-image')
         img.classList.add('loaded-image')
-        // 存储路径用于点击预览
         img.setAttribute('data-image-path', imgPath)
       } else {
-        // 加载失败，显示错误状态
         img.classList.add('image-error')
         img.setAttribute('title', response?.error || '无法加载图片')
       }
@@ -370,43 +414,36 @@ async function loadWorkspaceImages() {
 }
 
 /**
- * 处理图片点击，在 VSCode 中预览
+ * 处理图片点击
  */
 async function handleImageClick(event: Event) {
   const target = event.target as HTMLElement
   
-  // 检查是否点击了已加载的图片
   if (target.tagName === 'IMG' && target.classList.contains('loaded-image')) {
     const imgPath = target.getAttribute('data-image-path')
     if (imgPath) {
-      // 通过后端打开图片预览
       await sendToExtension('openWorkspaceFile', { path: imgPath })
     }
   }
 }
 
-// 组件挂载时添加事件监听
 onMounted(() => {
   if (containerRef.value) {
     containerRef.value.addEventListener('click', handleCopyClick)
     containerRef.value.addEventListener('click', handleImageClick)
   }
-  // 加载工作区图片
   nextTick(() => loadWorkspaceImages())
 })
 
-// 监听内容变化，重新加载图片
 watch(() => props.content, () => {
   nextTick(() => loadWorkspaceImages())
 })
 
-// 组件卸载时清理
 onUnmounted(() => {
   if (containerRef.value) {
     containerRef.value.removeEventListener('click', handleCopyClick)
     containerRef.value.removeEventListener('click', handleImageClick)
   }
-  // 清除所有计时器
   copyTimers.forEach((timer) => {
     window.clearTimeout(timer)
   })
@@ -419,82 +456,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* KaTeX 必要样式 */
-.markdown-content :deep(.katex) {
-  font-family: 'Times New Roman', Times, serif;
-  font-size: 1.1em;
-  text-rendering: auto;
-  white-space: nowrap;
-}
-
-.markdown-content :deep(.katex-html) {
-  display: inline-block;
-}
-
-.markdown-content :deep(.katex .base) {
-  display: inline-block;
-}
-
-.markdown-content :deep(.katex .strut) {
-  display: inline-block;
-}
-
-.markdown-content :deep(.katex .mord) {
-  display: inline;
-}
-
-.markdown-content :deep(.katex .mrel),
-.markdown-content :deep(.katex .mbin),
-.markdown-content :deep(.katex .mop) {
-  display: inline;
-}
-
-.markdown-content :deep(.katex .mspace) {
-  display: inline-block;
-}
-
-.markdown-content :deep(.katex .msupsub) {
-  display: inline-block;
-  text-align: left;
-}
-
-.markdown-content :deep(.katex .vlist-t) {
-  display: inline-table;
-  table-layout: fixed;
-}
-
-.markdown-content :deep(.katex .vlist-r) {
-  display: table-row;
-}
-
-.markdown-content :deep(.katex .vlist) {
-  display: table-cell;
-  vertical-align: bottom;
-  position: relative;
-}
-
-.markdown-content :deep(.katex .mfrac) {
-  display: inline-block;
-  vertical-align: middle;
-  text-align: center;
-}
-
-.markdown-content :deep(.katex .frac-line) {
-  display: block;
-  border-bottom: 1px solid;
-  margin: 0.04em 0;
-}
-
-.markdown-content :deep(.katex .sqrt) {
-  display: inline-block;
-}
-
-.markdown-content :deep(.katex-display) {
-  display: block;
-  margin: 0;
-  text-align: center;
-}
-
+/* 基础样式 */
 .markdown-content {
   font-size: 13px;
   line-height: 1.6;
@@ -509,6 +471,17 @@ onUnmounted(() => {
 
 .markdown-content :deep(p:last-child) {
   margin-bottom: 0;
+}
+
+/* 移除空段落 */
+.markdown-content :deep(p:empty) {
+  display: none;
+}
+
+/* 代码块前后的段落减少间距 */
+.markdown-content :deep(p + .code-block-wrapper),
+.markdown-content :deep(.code-block-wrapper + p) {
+  margin-top: 0;
 }
 
 /* 标题 */
@@ -539,6 +512,17 @@ onUnmounted(() => {
   margin: 0.25em 0;
 }
 
+/* 任务列表 */
+.markdown-content :deep(.task-list-item) {
+  list-style: none;
+  margin-left: -1.5em;
+}
+
+.markdown-content :deep(.task-list-item-checkbox) {
+  margin-right: 0.5em;
+  pointer-events: none;
+}
+
 /* 引用 */
 .markdown-content :deep(blockquote) {
   margin: 0.5em 0;
@@ -549,10 +533,38 @@ onUnmounted(() => {
   opacity: 0.9;
 }
 
-/* 代码块容器 */
-.markdown-content :deep(.code-block-wrapper) {
-  position: relative;
+/* 嵌套引用 */
+.markdown-content :deep(blockquote blockquote) {
+  border-left-color: var(--vscode-textLink-foreground);
+}
+
+/* 定义列表 */
+.markdown-content :deep(dl) {
   margin: 0.8em 0;
+}
+
+.markdown-content :deep(dt) {
+  font-weight: 600;
+  margin-top: 0.5em;
+}
+
+.markdown-content :deep(dd) {
+  margin-left: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+/* 代码块容器 - 现在是 pre.code-block-wrapper */
+.markdown-content :deep(pre.code-block-wrapper) {
+  position: relative;
+  margin: 0.5em 0;
+  padding: 12px;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 4px;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(100, 100, 100, 0.4)) transparent;
 }
 
 /* 复制按钮 */
@@ -595,7 +607,6 @@ onUnmounted(() => {
   display: none;
 }
 
-/* 复制成功状态 */
 .markdown-content :deep(.code-copy-btn.copied) {
   opacity: 1 !important;
 }
@@ -608,55 +619,16 @@ onUnmounted(() => {
   display: block;
 }
 
-/* 代码块 */
-.markdown-content :deep(pre.hljs) {
-  margin: 0;
-  padding: 12px;
-  background: var(--vscode-textCodeBlock-background);
-  border-radius: 4px;
-  overflow-x: auto;
-  max-height: 400px;
-  overflow-y: auto;
-  
-  /* 自定义滚动条 - Webkit */
-  scrollbar-width: thin;
-  scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(100, 100, 100, 0.4)) transparent;
-}
-
-.markdown-content :deep(pre.hljs::-webkit-scrollbar) {
-  width: 6px;
-  height: 6px;
-}
-
-.markdown-content :deep(pre.hljs::-webkit-scrollbar-track) {
-  background: transparent;
-}
-
-.markdown-content :deep(pre.hljs::-webkit-scrollbar-thumb) {
-  background: var(--vscode-scrollbarSlider-background, rgba(100, 100, 100, 0.4));
-  border-radius: 0;
-}
-
-.markdown-content :deep(pre.hljs::-webkit-scrollbar-thumb:hover) {
-  background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.55));
-}
-
-.markdown-content :deep(pre.hljs::-webkit-scrollbar-thumb:active) {
-  background: var(--vscode-scrollbarSlider-activeBackground, rgba(100, 100, 100, 0.7));
-}
-
-.markdown-content :deep(pre.hljs::-webkit-scrollbar-corner) {
-  background: transparent;
-}
-
-.markdown-content :deep(pre.hljs code) {
+/* 代码块内的 code */
+.markdown-content :deep(pre.code-block-wrapper code) {
   font-family: var(--vscode-editor-font-family, 'Consolas', 'Monaco', monospace);
   font-size: 12px;
   line-height: 1.5;
+  display: block;
 }
 
 /* 行内代码 */
-.markdown-content :deep(.inline-code) {
+.markdown-content :deep(code:not(.hljs)) {
   padding: 2px 6px;
   background: var(--vscode-textCodeBlock-background);
   border-radius: 3px;
@@ -674,6 +646,12 @@ onUnmounted(() => {
   text-decoration: underline;
 }
 
+.markdown-content :deep(a[target="_blank"])::after {
+  content: " ↗";
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
 /* 分隔线 */
 .markdown-content :deep(hr) {
   margin: 1em 0;
@@ -686,6 +664,8 @@ onUnmounted(() => {
   margin: 0.8em 0;
   border-collapse: collapse;
   width: 100%;
+  display: block;
+  overflow-x: auto;
 }
 
 .markdown-content :deep(th),
@@ -700,6 +680,10 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+.markdown-content :deep(tbody tr:hover) {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.1));
+}
+
 /* 粗体和斜体 */
 .markdown-content :deep(strong) {
   font-weight: 600;
@@ -709,7 +693,92 @@ onUnmounted(() => {
   font-style: italic;
 }
 
-/* LaTeX 块级公式 */
+/* 删除线 */
+.markdown-content :deep(del),
+.markdown-content :deep(s) {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+/* 脚注 */
+.markdown-content :deep(.footnotes) {
+  margin-top: 2em;
+  padding-top: 1em;
+  border-top: 1px solid var(--vscode-panel-border);
+  font-size: 0.9em;
+}
+
+.markdown-content :deep(.footnotes-sep) {
+  display: none;
+}
+
+.markdown-content :deep(.footnote-ref) {
+  font-size: 0.8em;
+  vertical-align: super;
+}
+
+.markdown-content :deep(.footnote-backref) {
+  text-decoration: none;
+}
+
+/* 缩写 */
+.markdown-content :deep(abbr) {
+  text-decoration: underline dotted;
+  cursor: help;
+}
+
+/* 键盘按键 */
+.markdown-content :deep(kbd) {
+  display: inline-block;
+  padding: 2px 6px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  background: var(--vscode-textCodeBlock-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  box-shadow: 0 1px 0 var(--vscode-panel-border);
+}
+
+/* 上下标 */
+.markdown-content :deep(sup) {
+  font-size: 0.75em;
+  vertical-align: super;
+}
+
+.markdown-content :deep(sub) {
+  font-size: 0.75em;
+  vertical-align: sub;
+}
+
+/* 高亮 */
+.markdown-content :deep(mark) {
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 235, 59, 0.3));
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+/* 折叠详情 */
+.markdown-content :deep(details) {
+  margin: 0.8em 0;
+  padding: 0.5em;
+  background: var(--vscode-textBlockQuote-background);
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border);
+}
+
+.markdown-content :deep(summary) {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.25em 0;
+}
+
+.markdown-content :deep(details[open] > summary) {
+  margin-bottom: 0.5em;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  padding-bottom: 0.5em;
+}
+
+/* LaTeX 公式 */
 .markdown-content :deep(.katex-block) {
   margin: 1em 0;
   padding: 12px;
@@ -719,7 +788,11 @@ onUnmounted(() => {
   text-align: center;
 }
 
-/* LaTeX 错误 */
+.markdown-content :deep(.katex) {
+  font-family: 'Times New Roman', Times, serif;
+  font-size: 1.1em;
+}
+
 .markdown-content :deep(.katex-error) {
   color: var(--vscode-errorForeground);
   font-family: var(--vscode-editor-font-family, monospace);
@@ -728,7 +801,7 @@ onUnmounted(() => {
   border-radius: 2px;
 }
 
-/* 图片 - 设置最大尺寸限制 */
+/* 图片 */
 .markdown-content :deep(img) {
   max-width: 400px;
   max-height: 300px;
@@ -738,17 +811,13 @@ onUnmounted(() => {
   object-fit: contain;
 }
 
-/* 工作区图片加载中 */
 .markdown-content :deep(img.workspace-image) {
   min-width: 100px;
   min-height: 60px;
-  max-width: 400px;
-  max-height: 300px;
   background: var(--vscode-textBlockQuote-background);
   border: 1px dashed var(--vscode-panel-border);
 }
 
-/* 工作区图片加载成功 */
 .markdown-content :deep(img.loaded-image) {
   cursor: pointer;
   transition: transform 0.15s, box-shadow 0.15s;
@@ -760,23 +829,11 @@ onUnmounted(() => {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
-/* 工作区图片加载失败 */
 .markdown-content :deep(img.image-error) {
   min-width: 100px;
   min-height: 40px;
-  max-width: 400px;
-  max-height: 300px;
   background: var(--vscode-inputValidation-errorBackground);
   border: 1px dashed var(--vscode-errorForeground);
   opacity: 0.7;
-}
-
-.markdown-content :deep(img.image-error::before) {
-  content: '⚠️ 图片加载失败';
-  display: block;
-  font-size: 11px;
-  color: var(--vscode-errorForeground);
-  text-align: center;
-  padding: 10px;
 }
 </style>
